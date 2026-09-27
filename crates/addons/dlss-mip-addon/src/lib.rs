@@ -25,11 +25,6 @@ static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 static EVAL_COUNT: AtomicI32 = AtomicI32::new(0);
 static SUB_COUNT: AtomicI32 = AtomicI32::new(0);
 
-type PfnReShadeRegister = unsafe extern "system" fn(HMODULE, u32) -> bool;
-type PfnReShadeUnregister = unsafe extern "system" fn(HMODULE);
-
-static mut RESHADE_UNREGISTER: Option<PfnReShadeUnregister> = None;
-static mut SELF_HMODULE: isize = 0;
 
 struct FeatureEntry {
     handle: usize,
@@ -217,6 +212,25 @@ pub unsafe fn try_install() -> bool {
     false
 }
 
+use windows_sys::Win32::System::LibraryLoader::{
+    GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN,
+};
+
+static mut SELF_HMODULE: isize = 0;
+static SHUTDOWN_SIGNAL: AtomicBool = AtomicBool::new(false);
+
+pub unsafe fn pin_module(addr: *const ()) {
+    let mut hmod = 0 as HMODULE;
+    let res = GetModuleHandleExW(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+        addr as *const u16,
+        &mut hmod,
+    );
+    if res != 0 {
+        log::log("[dlss-mip-fix] Module pinned in memory to survive temporary device rebuilds.");
+    }
+}
+
 type PfnLdrRegisterDllNotification = unsafe extern "system" fn(
     flags: u32,
     callback: unsafe extern "system" fn(reason: u32, data: *const std::ffi::c_void, context: *mut std::ffi::c_void),
@@ -236,6 +250,9 @@ unsafe extern "system" fn on_ldr_dll_event(
     _data: *const std::ffi::c_void,
     _context: *mut std::ffi::c_void,
 ) {
+    if SHUTDOWN_SIGNAL.load(Ordering::SeqCst) {
+        return;
+    }
     // 1 is LDR_DLL_NOTIFICATION_REASON_LOADED
     if reason == 1 {
         try_install();
@@ -266,7 +283,7 @@ pub unsafe fn start_watching_for_ngx() {
     // Also spawn a background retry loop to guarantee catching late initializers
     std::thread::spawn(|| {
         for _ in 0..150 {
-            if HOOK_INSTALLED.load(Ordering::SeqCst) {
+            if SHUTDOWN_SIGNAL.load(Ordering::SeqCst) || HOOK_INSTALLED.load(Ordering::SeqCst) {
                 break;
             }
             unsafe {
@@ -274,16 +291,77 @@ pub unsafe fn start_watching_for_ngx() {
                     break;
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            for _ in 0..5 {
+                if SHUTDOWN_SIGNAL.load(Ordering::SeqCst) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
         }
     });
 }
 
+#[no_mangle]
+pub unsafe extern "system" fn ReShadeAddonInit(
+    addon_module: HMODULE,
+    _reshade_api: *const std::ffi::c_void,
+) -> bool {
+    SELF_HMODULE = addon_module as isize;
+    pin_module(ReShadeAddonInit as *const ());
+    log::init_logger(SELF_HMODULE);
+    log::log("ReShadeAddonInit invoked for DLSS Studio D3D12 Mip Companion");
+    start_watching_for_ngx();
+    true
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn ReShadeAddonUnload(_addon_module: HMODULE) {
+    log::log("ReShadeAddonUnload invoked for DLSS Studio D3D12 Mip Companion");
+    SHUTDOWN_SIGNAL.store(true, Ordering::SeqCst);
+    let guard = HOOK.lock().unwrap();
+    guard.remove();
+    let create_guard = HOOK_CREATE.lock().unwrap();
+    create_guard.remove();
+}
+
+type PfnReShadeRegister = unsafe extern "system" fn(HMODULE, u32) -> bool;
+type PfnReShadeUnregister = unsafe extern "system" fn(HMODULE);
+
+static mut RESHADE_UNREGISTER: Option<PfnReShadeUnregister> = None;
+
 unsafe fn register_reshade(self_mod: HMODULE) {
-    use windows_sys::Win32::System::LibraryLoader::GetProcAddress;
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
     use windows_sys::Win32::System::ProcessStatus::K32EnumProcessModules;
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
+    let reg_sym = b"ReShadeRegisterAddon\0";
+    let unreg_sym = b"ReShadeUnregisterAddon\0";
+
+    // 1. First probe common ReShade hook modules directly
+    for &mod_name in &[
+        b"dxgi.dll\0".as_ptr(),
+        b"ReShade64.dll\0".as_ptr(),
+        b"d3d12.dll\0".as_ptr(),
+        b"d3d11.dll\0".as_ptr(),
+    ] {
+        let hmod = GetModuleHandleA(mod_name);
+        if hmod != 0 {
+            if let Some(p_reg) = GetProcAddress(hmod, reg_sym.as_ptr()) {
+                let reg_fn: PfnReShadeRegister = std::mem::transmute(p_reg);
+                for ver in (5..=18).rev() {
+                    if reg_fn(self_mod, ver) {
+                        if let Some(p_unreg) = GetProcAddress(hmod, unreg_sym.as_ptr()) {
+                            RESHADE_UNREGISTER = Some(std::mem::transmute(p_unreg));
+                        }
+                        log::log(&format!("Registered as ReShade add-on (API v{})", ver));
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Fall back to process module enumeration
     let mut mods = [0 as HMODULE; 1024];
     let mut needed = 0u32;
     if K32EnumProcessModules(
@@ -291,29 +369,23 @@ unsafe fn register_reshade(self_mod: HMODULE) {
         mods.as_mut_ptr(),
         (mods.len() * std::mem::size_of::<HMODULE>()) as u32,
         &mut needed,
-    ) == 0
+    ) != 0
     {
-        return;
-    }
-
-    let count = (needed as usize) / std::mem::size_of::<HMODULE>();
-    let reg_sym = b"ReShadeRegisterAddon\0";
-    let unreg_sym = b"ReShadeUnregisterAddon\0";
-
-    for &hmod in &mods[..count] {
-        if hmod == 0 {
-            continue;
-        }
-
-        if let Some(p_reg) = GetProcAddress(hmod, reg_sym.as_ptr()) {
-            let reg_fn: PfnReShadeRegister = std::mem::transmute(p_reg);
-            for ver in (5..=18).rev() {
-                if reg_fn(self_mod, ver) {
-                    if let Some(p_unreg) = GetProcAddress(hmod, unreg_sym.as_ptr()) {
-                        RESHADE_UNREGISTER = Some(std::mem::transmute(p_unreg));
+        let count = (needed as usize) / std::mem::size_of::<HMODULE>();
+        for &hmod in &mods[..count] {
+            if hmod == 0 {
+                continue;
+            }
+            if let Some(p_reg) = GetProcAddress(hmod, reg_sym.as_ptr()) {
+                let reg_fn: PfnReShadeRegister = std::mem::transmute(p_reg);
+                for ver in (5..=18).rev() {
+                    if reg_fn(self_mod, ver) {
+                        if let Some(p_unreg) = GetProcAddress(hmod, unreg_sym.as_ptr()) {
+                            RESHADE_UNREGISTER = Some(std::mem::transmute(p_unreg));
+                        }
+                        log::log(&format!("Registered as ReShade add-on (API v{})", ver));
+                        return;
                     }
-                    log::log(&format!("Registered as ReShade add-on (API v{})", ver));
-                    return;
                 }
             }
         }
@@ -330,6 +402,7 @@ pub unsafe extern "system" fn DllMain(
     match fdw_reason {
         DLL_PROCESS_ATTACH => {
             SELF_HMODULE = hinstance as isize;
+            pin_module(hinstance as *const ());
             log::init_logger(SELF_HMODULE);
             log::log("DLSS Studio D3D12 Mip Companion attached.");
 
@@ -337,6 +410,7 @@ pub unsafe extern "system" fn DllMain(
             start_watching_for_ngx();
         }
         DLL_PROCESS_DETACH => {
+            SHUTDOWN_SIGNAL.store(true, Ordering::SeqCst);
             if let Some(unreg) = LDR_UNREGISTER {
                 if !LDR_COOKIE.is_null() {
                     unreg(LDR_COOKIE);
@@ -354,10 +428,6 @@ pub unsafe extern "system" fn DllMain(
             guard.remove();
             let create_guard = HOOK_CREATE.lock().unwrap();
             create_guard.remove();
-
-            if let Some(unreg) = RESHADE_UNREGISTER {
-                unreg(SELF_HMODULE as _);
-            }
         }
         _ => {}
     }

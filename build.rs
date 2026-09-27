@@ -73,8 +73,9 @@ fn main() {
         }
     }
 
-    // 3. Fallback to debug only if no release binary exists anywhere
-    if chosen_exe.is_none() {
+    // 3. Fallback to debug only if not in release profile and no release binary exists
+    let is_release_profile = std::env::var("PROFILE").unwrap_or_default() == "release";
+    if chosen_exe.is_none() && !is_release_profile {
         let debug_exe = std::path::PathBuf::from("target/debug/dlss-studio.exe");
         if debug_exe.exists() {
             chosen_exe = Some(debug_exe);

@@ -184,8 +184,8 @@ fn test_find_overlay_addon_payload() {
 
 #[test]
 fn test_find_payloads() {
-    if find_optiscaler_payload().is_none() {
-        println!("OptiScaler payload not installed on this runner; skipping payload discovery test.");
+    if find_optiscaler_payload().is_none() || find_standalone_mfg_payload().is_none() {
+        println!("OptiScaler or Standalone MFG payload not installed on this runner; skipping payload discovery test.");
         return;
     }
     assert!(find_optiscaler_payload().is_some(), "OptiScaler payload should be found");
@@ -198,8 +198,8 @@ fn test_find_payloads() {
 #[test]
 fn test_deploy_and_restore() {
     let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    if find_optiscaler_payload().is_none() {
-        println!("OptiScaler payload not installed on this runner; skipping deploy and restore test.");
+    if find_optiscaler_payload().is_none() || find_standalone_mfg_payload().is_none() {
+        println!("OptiScaler or Standalone MFG payload not installed on this runner; skipping deploy and restore test.");
         return;
     }
     let temp = TempDir::new("deploy_restore");
@@ -751,8 +751,8 @@ fn test_streamline_game_deploys_version_dll_with_external_framegen() {
 
     let ini_content = fs::read_to_string(bin_dir.join("OptiScaler.ini")).unwrap();
     assert_eq!(get_ini(&ini_content, "FrameGen", "External"), Some("true".to_string()));
-    assert_eq!(get_ini(&ini_content, "DLSSG", "InterpolationCount"), Some("auto".to_string()));
-    assert_eq!(get_ini(&ini_content, "DLSSG", "OverrideInterpolationCount"), Some("auto".to_string()));
+    assert_eq!(get_ini(&ini_content, "DLSSG", "InterpolationCount"), Some("3".to_string()));
+    assert_eq!(get_ini(&ini_content, "DLSSG", "OverrideInterpolationCount"), Some("true".to_string()));
 
     let restored = dlss_studio::core::journal::restore_game(&game_dir).expect("restore must succeed");
     assert!(restored);
@@ -1198,7 +1198,7 @@ fn test_ini_parser_handles_malformed_input() {
 fn test_generate_optiscaler_ini_all_combinations() {
     let base = "[DlssNr]\nEnabled=false\n\n[Plugins]\nLoadReshade=true\n";
 
-    let res_a = generate_optiscaler_ini(base, true, 3, true, Some("CyberGame.exe"), 2);
+    let res_a = generate_optiscaler_ini(base, true, 3, true, Some("CyberGame.exe"), 2, Some("DirectX 12"), 4);
     assert_eq!(get_ini(&res_a, "DlssNr", "Enabled"), Some("true".to_string()));
     assert_eq!(get_ini(&res_a, "DlssNr", "RunBeforeSR"), Some("true".to_string()));
     assert_eq!(get_ini(&res_a, "DlssNr", "Passes"), Some("3".to_string()));
@@ -1206,15 +1206,70 @@ fn test_generate_optiscaler_ini_all_combinations() {
     assert_eq!(get_ini(&res_a, "DlssNr", "Style"), Some("2".to_string()));
     assert_eq!(get_ini(&res_a, "Plugins", "LoadReshade"), Some("false".to_string()));
     assert_eq!(get_ini(&res_a, "FrameGen", "External"), Some("true".to_string()));
+    assert_eq!(get_ini(&res_a, "FrameGen", "Enabled"), Some("true".to_string()));
+    assert_eq!(get_ini(&res_a, "Dx11withDx12", "BuiltinMfgUnlock"), Some("true".to_string()));
+    assert_eq!(get_ini(&res_a, "MfgUnlock", "Enabled"), Some("true".to_string()));
+    assert_eq!(get_ini(&res_a, "MfgUnlock", "Multiplier"), Some("4".to_string()));
+    assert_eq!(get_ini(&res_a, "DLSSG", "Multiplier"), Some("4".to_string()));
+    assert_eq!(get_ini(&res_a, "DLSSG", "AdaMfgUnlock"), Some("true".to_string()));
+    assert_eq!(get_ini(&res_a, "DLSSG", "InterpolationCount"), Some("3".to_string()));
+    assert_eq!(get_ini(&res_a, "DLSSG", "OverrideInterpolationCount"), Some("true".to_string()));
     assert_eq!(get_ini(&res_a, "Menu", "ShortcutKey"), Some("0x2D".to_string()));
     assert_eq!(get_ini(&res_a, "Init", "TargetProcessName"), Some("CyberGame.exe".to_string()));
+    assert_eq!(get_ini(&res_a, "Upscalers", "Dx12Upscaler"), Some("dlss".to_string()));
+    assert_eq!(get_ini(&res_a, "Spoofing", "StreamlineSpoofing"), Some("false".to_string()));
+    assert_eq!(get_ini(&res_a, "Spoofing", "Dxgi"), Some("false".to_string()));
 
-    let res_b = generate_optiscaler_ini(base, false, 1, false, None, 0);
+    let res_b = generate_optiscaler_ini(base, false, 1, false, None, 0, None, 4);
     assert_eq!(get_ini(&res_b, "DlssNr", "Enabled"), Some("false".to_string()));
     assert_eq!(get_ini(&res_b, "DlssNr", "RunBeforeSR"), Some("false".to_string()));
     assert_eq!(get_ini(&res_b, "DlssNr", "Passes"), Some("1".to_string()));
     assert_eq!(get_ini(&res_b, "Plugins", "LoadReshade"), Some("false".to_string()));
     assert_eq!(get_ini(&res_b, "FrameGen", "External"), Some("false".to_string()));
+    assert_eq!(get_ini(&res_b, "FrameGen", "Enabled"), Some("false".to_string()));
+    assert_eq!(get_ini(&res_b, "Dx11withDx12", "BuiltinMfgUnlock"), Some("false".to_string()));
+    assert_eq!(get_ini(&res_b, "MfgUnlock", "Enabled"), Some("false".to_string()));
+    assert_eq!(get_ini(&res_b, "MfgUnlock", "Multiplier"), Some("auto".to_string()));
+    assert_eq!(get_ini(&res_b, "DLSSG", "Multiplier"), Some("auto".to_string()));
+    assert_eq!(get_ini(&res_b, "DLSSG", "AdaMfgUnlock"), Some("false".to_string()));
+
+    // DX11 games with MFG enabled automatically configure D3D11 to D3D12 bridge, OptiFG upscaler inputs, and delayed init
+    let res_dx11 = generate_optiscaler_ini(base, true, 1, true, Some("bg3_dx11.exe"), 0, Some("DirectX 11"), 4);
+    assert_eq!(get_ini(&res_dx11, "Upscalers", "Dx11Upscaler"), Some("dlss_12".to_string()));
+    assert_eq!(get_ini(&res_dx11, "FrameGen", "Enabled"), Some("true".to_string()));
+    assert_eq!(get_ini(&res_dx11, "FrameGen", "FGInput"), Some("upscaler".to_string()));
+    assert_eq!(get_ini(&res_dx11, "FrameGen", "FGOutput"), Some("dlssg".to_string()));
+    assert_eq!(get_ini(&res_dx11, "FrameGen", "FGNvngxReplacement"), Some("None".to_string()));
+    assert_eq!(get_ini(&res_dx11, "OptiFG", "HUDFix"), Some("true".to_string()));
+    assert_eq!(get_ini(&res_dx11, "Dx11withDx12", "BuiltinMfgUnlock"), Some("true".to_string()));
+    assert_eq!(get_ini(&res_dx11, "Dx11withDx12", "UseDelayedInit"), Some("true".to_string()));
+    assert_eq!(get_ini(&res_dx11, "MfgUnlock", "Enabled"), Some("true".to_string()));
+    assert_eq!(get_ini(&res_dx11, "MfgUnlock", "Multiplier"), Some("4".to_string()));
+    assert_eq!(get_ini(&res_dx11, "DLSSG", "Multiplier"), Some("4".to_string()));
+    assert_eq!(get_ini(&res_dx11, "DLSSG", "AdaMfgUnlock"), Some("true".to_string()));
+    assert_eq!(get_ini(&res_dx11, "DLSSG", "InterpolationCount"), Some("3".to_string()));
+    assert_eq!(get_ini(&res_dx11, "Spoofing", "StreamlineSpoofing"), Some("false".to_string()));
+
+    // Vulkan games automatically configure native DLSS
+    let res_vk = generate_optiscaler_ini(base, true, 1, true, Some("bg3.exe"), 0, Some("Vulkan"), 4);
+    assert_eq!(get_ini(&res_vk, "Upscalers", "VulkanUpscaler"), Some("dlss".to_string()));
+    assert_eq!(get_ini(&res_vk, "Spoofing", "StreamlineSpoofing"), Some("false".to_string()));
+}
+
+#[test]
+fn test_dynamic_optiscaler_payload_scoring_prioritizes_rtx40_mfg_and_latest_version() {
+    let score_rtx40_085 = score_optiscaler_dir("OptiScaler-NR-v0.8.5-rtx40-mfg");
+    let score_rtx40_084 = score_optiscaler_dir("OptiScaler-NR-v0.8.4-rtx40-mfg");
+    let score_base_085 = score_optiscaler_dir("OptiScaler-0.8.5-dlssnr");
+    let score_base_084 = score_optiscaler_dir("OptiScaler-0.8.4-dlssnr");
+
+    // rtx40-mfg builds must score higher than base builds
+    assert!(score_rtx40_085 > score_base_085, "rtx40-mfg builds must have priority over base builds");
+    assert!(score_rtx40_084 > score_base_084, "rtx40-mfg builds must have priority over base builds");
+
+    // newer version must score higher than older version within same tier
+    assert!(score_rtx40_085 > score_rtx40_084, "v0.8.5 must score higher than v0.8.4");
+    assert!(score_base_085 > score_base_084, "v0.8.5 must score higher than v0.8.4");
 }
 
 #[test]
@@ -1226,7 +1281,10 @@ fn test_payload_bundle_from_system_finds_streamline() {
             return;
         }
     };
-    assert!(bundle.streamline_dir.is_some(), "Streamline payload directory must be found on system");
+    if bundle.streamline_dir.is_none() || bundle.nvngx_snippet_dll.is_none() {
+        println!("Streamline or snippet payload not installed on this runner; skipping test.");
+        return;
+    }
     let dir = bundle.streamline_dir.unwrap();
     assert!(dir.join("sl.interposer.dll").exists());
     assert!(dir.join("sl.common.dll").exists());
@@ -1234,7 +1292,6 @@ fn test_payload_bundle_from_system_finds_streamline() {
     assert!(dir.join("sl.dlss_g.dll").exists());
     assert!(dir.join("nvngx_dlssg.dll").exists());
 
-    assert!(bundle.nvngx_snippet_dll.is_some(), "nvngx.dll_dlssnr.dll forwarder must be found on system");
     let snippet = bundle.nvngx_snippet_dll.unwrap();
     assert!(snippet.is_file(), "nvngx.dll_dlssnr.dll must be a valid file");
 }
@@ -1357,11 +1414,11 @@ fn test_deploy_opengl_feeder_deploys_opengl32_and_cleans_stale_dxgi() {
 fn test_hot_swap_between_feeder_and_optiscaler_without_intermediate_restore() {
     let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let temp = TempDir::new("hotswap");
-    let game_dir = temp.join("BaldursGate3");
+    let game_dir = temp.join("VulkanGame");
     let bin_dir = game_dir.join("bin");
     fs::create_dir_all(&bin_dir).unwrap();
 
-    let exe_path = bin_dir.join("bg3.exe");
+    let exe_path = bin_dir.join("vulkangame.exe");
     let mut exe_bytes = vec![0u8; 10000];
     exe_bytes[100..110].copy_from_slice(b"vkCreateIn");
     fs::write(&exe_path, &exe_bytes).unwrap();
@@ -1369,7 +1426,7 @@ fn test_hot_swap_between_feeder_and_optiscaler_without_intermediate_restore() {
     let payloads = create_mock_payload_bundle(&temp.join("payloads"));
 
     let feeder_opts = DeployOptions {
-        game_name: Some("Baldurs Gate 3".to_string()),
+        game_name: Some("Vulkan Game".to_string()),
         game_dir: game_dir.clone(),
         exe_path: exe_path.clone(),
         api: "Vulkan".to_string(),
@@ -1392,7 +1449,7 @@ fn test_hot_swap_between_feeder_and_optiscaler_without_intermediate_restore() {
     assert!(dlss_studio::core::vulkan_layer::is_game_registered(&game_dir));
 
     let opti_opts = DeployOptions {
-        game_name: Some("Baldurs Gate 3".to_string()),
+        game_name: Some("Vulkan Game".to_string()),
         game_dir: game_dir.clone(),
         exe_path: exe_path.clone(),
         api: "Vulkan".to_string(),
@@ -1409,8 +1466,7 @@ fn test_hot_swap_between_feeder_and_optiscaler_without_intermediate_restore() {
 
     assert!(bin_dir.join("dxgi.dll").exists());
     assert!(bin_dir.join("OptiScaler.ini").exists());
-    assert!(bin_dir.join("version.dll").exists());
-    assert!(bin_dir.join("RTXMFG-Universal.json").exists());
+    assert!(!bin_dir.join("RTXMFG-Universal.json").exists(), "DirectX 12 RTXMFG hook must NOT be deployed on Vulkan");
 
     assert!(!bin_dir.join("ReShade.ini").exists(), "ReShade.ini must be purged when hot-swapping to OptiScaler");
     assert!(!bin_dir.join("ReShadePreset.ini").exists(), "ReShadePreset.ini must be purged");
@@ -1814,10 +1870,58 @@ fn test_native_dlss5_configures_direct_nr_hooks_and_uplift() {
     assert!(res.success);
 
     let reshade_ini = fs::read_to_string(game_dir.join("ReShade.ini")).expect("ReShade.ini must exist");
+    assert_eq!(get_ini(&reshade_ini, "DLSS_NR", "Passes"), Some("1".to_string()), "Native route must write DLSS_NR Passes=1");
+    assert_eq!(get_ini(&reshade_ini, "DLSS_NR", "ResolutionMode"), Some("0".to_string()), "Native route must write DLSS_NR ResolutionMode=0");
+    assert_eq!(get_ini(&reshade_ini, "DLSS_NR", "PreSR"), Some("0".to_string()), "Native route must write DLSS_NR PreSR=0");
     assert_eq!(get_ini(&reshade_ini, "RenoDX.DLSS5", "EnableHooks"), Some("2".to_string()), "Native route must write EnableHooks=2");
     assert_eq!(get_ini(&reshade_ini, "RenoDX.DLSS5", "NeuralUplift"), Some("1".to_string()), "Native route must write NeuralUplift=1");
     assert_eq!(get_ini(&reshade_ini, "RenoDX.DLSS5", "NRAutoMask"), Some("1".to_string()), "Native route must write NRAutoMask=1");
     assert_eq!(get_ini(&reshade_ini, "RenoDX.DLSS5", "NRStyle"), Some("2".to_string()), "Native route must write NRStyle=2");
+}
+
+#[test]
+fn test_native_dlss5_deploys_renodx_addon_and_cleans_conflicting_older_addons() {
+    let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = TempDir::new("renodx_deploy");
+    let game_dir = temp.join("TestGame");
+    fs::create_dir_all(&game_dir).unwrap();
+
+    let exe_path = game_dir.join("Game.exe");
+    fs::write(&exe_path, create_mock_pe64()).unwrap();
+
+    // Pre-populate game folder with conflicting older addons
+    let stale_nr = game_dir.join("dlss-nr.addon64");
+    fs::write(&stale_nr, b"OLD_STALE_NR").unwrap();
+    let stale_dlss = game_dir.join("renodx-dlss.addon64");
+    fs::write(&stale_dlss, b"OLD_STALE_DLSS").unwrap();
+
+    let mut payloads = create_mock_payload_bundle(&temp.join("payloads"));
+    let renodx_addon = temp.join("payloads").join("renodx-dlss5.addon64");
+    fs::write(&renodx_addon, b"MOCK_RENODX_DLSS5_ADDON").unwrap();
+    payloads.renodx_dlss5_addon = Some(renodx_addon);
+
+    let native_opts = DeployOptions {
+        game_name: Some("Direct NR Stacking Game".to_string()),
+        game_dir: game_dir.clone(),
+        exe_path: exe_path.clone(),
+        api: "DirectX 12".to_string(),
+        pre_sr: false,
+        passes: 2,
+        mfg_unlock: false,
+        mfg_multiplier: 1,
+        nr_style: 1,
+        nr_style_enabled: true,
+    };
+
+    let res = deploy_native_dlss5_with_bundle(&native_opts, &payloads).expect("deploy must succeed");
+    assert!(res.success);
+
+    // renodx-dlss5.addon64 must be deployed
+    assert!(game_dir.join("renodx-dlss5.addon64").is_file(), "renodx-dlss5.addon64 must be deployed");
+
+    // Conflicting older/prototype addons must be automatically cleaned up
+    assert!(!game_dir.join("dlss-nr.addon64").exists(), "Stale dlss-nr.addon64 must be cleaned up");
+    assert!(!game_dir.join("renodx-dlss.addon64").exists(), "Stale renodx-dlss.addon64 must be cleaned up");
 }
 
 #[test]
@@ -2002,3 +2106,205 @@ fn test_hot_swap_removes_dlss5_d3d12_fix_when_switching_to_optiscaler() {
     assert!(!game_dir.join("dlss-mip-fix.log").exists(), "dlss-mip-fix.log must NOT exist in OptiScaler route");
     assert!(!game_dir.join("renodx-dlss5.addon64").exists(), "renodx-dlss5.addon64 must NOT exist in OptiScaler route");
 }
+
+#[test]
+fn test_frame_generation_status_vulkan_unsupported() {
+    let mut game = dlss_studio::core::scan::GameEntry::default();
+    game.name = "Baldur's Gate 3".to_string();
+    game.api = "Vulkan".to_string();
+    game.bitness = 64;
+    game.dlss_version = Some("3.10.8.0".to_string());
+    game.has_frame_generation = false;
+    game.can_inject_fg = false;
+
+    let (status, is_on) = dlss_studio::core::install_routes::frame_generation_status(&game);
+    assert_eq!(status, "Unsupported (Vulkan API)");
+    assert!(!is_on);
+}
+
+#[test]
+fn test_frame_generation_status_directx11_unsupported() {
+    let mut game = dlss_studio::core::scan::GameEntry::default();
+    game.name = "Baldur's Gate 3 (DX11)".to_string();
+    game.api = "DirectX 11".to_string();
+    game.bitness = 64;
+    game.has_frame_generation = false;
+    game.can_inject_fg = false;
+
+    let (status, is_on) = dlss_studio::core::install_routes::frame_generation_status(&game);
+    assert_eq!(status, "Unsupported (DirectX 11)");
+    assert!(!is_on);
+}
+
+#[test]
+fn test_backup_dir_ancestor_resolution() {
+    let temp = TempDir::new("ancestor_backup");
+    let root = temp.path();
+    let deep_dir = root.join("Content").join("NewMoon").join("Binaries").join("WinGDK");
+    fs::create_dir_all(&deep_dir).unwrap();
+
+    let backup = root.join("_DLSS5_Backup");
+    fs::create_dir_all(&backup).unwrap();
+    fs::write(backup.join("manifest.json"), b"{}").unwrap();
+
+    let resolved = dlss_studio::core::journal::backup_dir(&deep_dir);
+    assert!(
+        resolved == backup
+            || fs::canonicalize(&resolved).ok() == fs::canonicalize(&backup).ok(),
+        "backup_dir must resolve ancestor _DLSS5_Backup from nested game dir (resolved: {:?}, expected: {:?})",
+        resolved,
+        backup
+    );
+}
+
+#[test]
+fn test_retroactive_backfill_added_history() {
+    let temp = TempDir::new("backfill_test");
+    let game_dir = temp.join("GameDir");
+    let bdir = game_dir.join("_DLSS5_Backup");
+    fs::create_dir_all(&bdir).unwrap();
+
+    let mut m1 = dlss_studio::core::journal::ActiveManifest::default();
+    m1.added = vec!["file_a.dll".to_string(), "file_b.dll".to_string()];
+    fs::write(bdir.join("manifest.json.done-100"), serde_json::to_vec(&m1).unwrap()).unwrap();
+
+    let mut m2 = dlss_studio::core::journal::ActiveManifest::default();
+    m2.added = vec!["nvngx_dlss.dll".to_string()];
+    fs::write(bdir.join("manifest.json.done-200"), serde_json::to_vec(&m2).unwrap()).unwrap();
+
+    let mut m3 = dlss_studio::core::journal::ActiveManifest::default();
+    m3.added = vec!["file_c.dll".to_string()];
+    fs::write(bdir.join("manifest.json.done-300"), serde_json::to_vec(&m3).unwrap()).unwrap();
+
+    assert!(!bdir.join("added_history.json").exists(), "added_history.json must not exist initially");
+
+    let history = dlss_studio::core::journal::read_or_backfill_added_history(&game_dir);
+    assert!(bdir.join("added_history.json").exists(), "added_history.json must be persisted after backfill");
+    assert!(history.files.contains("file_a.dll"));
+    assert!(history.files.contains("file_b.dll"));
+    assert!(history.files.contains("nvngx_dlss.dll"));
+    assert!(history.files.contains("file_c.dll"));
+}
+
+#[test]
+fn test_cumulative_added_history_multi_cycle_swap_and_prune() {
+    let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = TempDir::new("cumulative_cycle_test");
+    let game_dir = temp.join("GameDir");
+    fs::create_dir_all(&game_dir).unwrap();
+
+    let exe_path = game_dir.join("Game.exe");
+    fs::write(&exe_path, create_mock_pe64()).unwrap();
+
+    // Genuine game file that should be backed up and preserved
+    let original_dxgi = game_dir.join("dxgi.dll");
+    fs::write(&original_dxgi, b"GENUINE_GAME_DXGI").unwrap();
+
+    let payloads = create_mock_payload_bundle(&temp.join("payloads"));
+
+    // Cycle 1: Native DLSS 5 route
+    let native_opts = DeployOptions {
+        game_name: Some("MultiCycle Game".to_string()),
+        game_dir: game_dir.clone(),
+        exe_path: exe_path.clone(),
+        api: "DirectX 12".to_string(),
+        pre_sr: false,
+        passes: 1,
+        mfg_unlock: false,
+        mfg_multiplier: 1,
+        nr_style: 0,
+        nr_style_enabled: false,
+    };
+    let res1 = deploy_native_dlss5_with_bundle(&native_opts, &payloads).expect("deploy native");
+    assert!(res1.success);
+    assert!(game_dir.join("renodx-dlss5.addon64").exists());
+
+    // Cycle 2: Feeder route (adds nvngx_dlss.dll)
+    let feeder_opts = DeployOptions {
+        game_name: Some("MultiCycle Game".to_string()),
+        game_dir: game_dir.clone(),
+        exe_path: exe_path.clone(),
+        api: "DirectX 12".to_string(),
+        pre_sr: false,
+        passes: 1,
+        mfg_unlock: true,
+        mfg_multiplier: 2,
+        nr_style: 0,
+        nr_style_enabled: false,
+    };
+    let res2 = deploy_feeder_with_bundle(&feeder_opts, &payloads).expect("deploy feeder");
+    assert!(res2.success);
+    assert!(game_dir.join("nvngx_dlss.dll").exists());
+
+    // Cycle 3: OptiScaler route
+    let opti_opts = DeployOptions {
+        game_name: Some("MultiCycle Game".to_string()),
+        game_dir: game_dir.clone(),
+        exe_path: exe_path.clone(),
+        api: "DirectX 12".to_string(),
+        pre_sr: true,
+        passes: 1,
+        mfg_unlock: false,
+        mfg_multiplier: 1,
+        nr_style: 0,
+        nr_style_enabled: false,
+    };
+    let res3 = deploy_optiscaler_with_bundle(&opti_opts, &payloads).expect("deploy optiscaler");
+    assert!(res3.success);
+
+    // Cycles 4..10: Simulate 7 additional swaps/deployments, exceeding the 5-manifest prune limit
+    let bdir = game_dir.join("_DLSS5_Backup");
+    for i in 4..=10 {
+        let mut sim_manifest = dlss_studio::core::journal::ActiveManifest::default();
+        sim_manifest.route = format!("variant_{}", i);
+        let extra_file = format!("extra_mod_{}.dll", i);
+        fs::write(game_dir.join(&extra_file), b"SIMULATED_MOD").unwrap();
+        sim_manifest.added = vec![extra_file];
+
+        // Archive previous manifest if exists, carrying forward genuine replaced backups
+        let mpath = bdir.join("manifest.json");
+        if mpath.exists() {
+            if let Some(prev) = dlss_studio::core::journal::read_manifest(&game_dir) {
+                sim_manifest.replaced = prev.replaced;
+                sim_manifest.backup_prefix = prev.backup_prefix;
+            }
+            let done_path = bdir.join(format!("manifest.json.done-1000{}", i));
+            let _ = fs::rename(&mpath, done_path);
+        }
+        dlss_studio::core::journal::save_manifest(&game_dir, &sim_manifest).unwrap();
+    }
+
+    // Assert pruning happened: only top 5 done manifests exist
+    let done_count = fs::read_dir(&bdir).unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("manifest.json.done-"))
+        .count();
+    assert_eq!(done_count, 5, "Only 5 done manifests should be retained after pruning");
+
+    // But cumulative added_history.json still remembers ALL files from cycles 1 and 2!
+    let history = dlss_studio::core::journal::read_added_history(&game_dir).expect("added_history.json must exist");
+    assert!(history.files.contains("renodx-dlss5.addon64"), "History must retain cycle 1 files");
+    assert!(history.files.contains("nvngx_dlss.dll"), "History must retain cycle 2 nvngx_dlss.dll");
+    assert!(history.files.contains("extra_mod_4.dll"), "History must retain cycle 4 files");
+    assert!(history.files.contains("extra_mod_10.dll"), "History must retain cycle 10 files");
+
+    // Now execute restore_game - it must clean 100% of all added files across all 10 cycles
+    let restored = dlss_studio::core::journal::restore_game(&game_dir).expect("restore_game");
+    assert!(restored);
+
+    // Assert zero leftover files!
+    assert!(!game_dir.join("nvngx_dlss.dll").exists(), "nvngx_dlss.dll from cycle 2 MUST be purged");
+    assert!(!game_dir.join("renodx-dlss5.addon64").exists(), "renodx-dlss5.addon64 from cycle 1 MUST be purged");
+    for i in 4..=10 {
+        let extra_file = format!("extra_mod_{}.dll", i);
+        assert!(!game_dir.join(&extra_file).exists(), "{} must be purged on restore", extra_file);
+    }
+
+    // Genuine original dxgi.dll must be intact!
+    let dxgi_bytes = fs::read(&original_dxgi).expect("original dxgi.dll must exist");
+    assert_eq!(dxgi_bytes, b"GENUINE_GAME_DXGI", "Original dxgi.dll must be restored");
+
+    // added_history.json must be archived
+    assert!(!bdir.join("added_history.json").exists(), "added_history.json must be archived on restore");
+}
+

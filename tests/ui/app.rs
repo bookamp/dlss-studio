@@ -214,3 +214,30 @@ fn test_resolve_module_meta() {
     assert_eq!(resolve_module_meta("optiscaler/dxgi.dll"), ("module_optiscaler", "OptiScaler", "vendor-opti", "OptiScaler"));
     assert_eq!(resolve_module_meta("some_other.dll"), ("module_generic_dll", "Runtime", "vendor-generic", "DLL"));
 }
+
+#[test]
+fn test_info_advisory_does_not_trigger_override_mode() {
+    use dlss_studio::core::install_routes::{AdvisorySeverity, RouteAdvisory};
+
+    let info_advisory = RouteAdvisory {
+        title: "Test Info".to_string(),
+        reasons: vec!["Informational configuration note".to_string()],
+        recommendation: "Bridge is active".to_string(),
+        severity: AdvisorySeverity::Info,
+    };
+
+    let active_advisories = vec![info_advisory];
+    let has_override = active_advisories.iter().any(|a| a.severity == AdvisorySeverity::Warning);
+    assert!(!has_override, "Informational advisories must NEVER trigger deploy override mode");
+
+    let warning_advisory = RouteAdvisory {
+        title: "Test Warning".to_string(),
+        reasons: vec!["Hard blocker".to_string()],
+        recommendation: "Do not use".to_string(),
+        severity: AdvisorySeverity::Warning,
+    };
+
+    let active_advisories_with_warning = vec![warning_advisory];
+    let has_override_warning = active_advisories_with_warning.iter().any(|a| a.severity == AdvisorySeverity::Warning);
+    assert!(has_override_warning, "Warning advisories must trigger deploy override mode");
+}

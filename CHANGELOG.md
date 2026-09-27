@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.0.1] - 2026-09-27
+
+### Added
+- **Universal RTX 40 Multi-Frame Generation (Dashdogy Core Module)**: Integrated Dashdogy's standalone `RTXMFG.dll` as a first-class core component alongside RenoDX, with dynamic GitHub asset discovery, status badges, automated configuration (`RTXMFG-Universal.json` / `RTX40MFG-Universal.json`), and dedicated Add-on page controls.
+- **DirectX 11 OptiScaler D3D11on12 Interop & Streamline Stack**: Robust first-class DirectX 11 OptiScaler support bridging DX11 DLSS calls through `D3D11on12` to modern DLSS 5 Neural Rendering, deploying Streamline 2.14.1 into `OptiScaler/streamline/` to permanently fix `DXGI_ERROR_DEVICE_REMOVED` crashes.
+- **DirectX 11 Interop Notice**: Non-blocking blue configuration notice (`AdvisorySeverity::Info`) alerting users that DirectX 11 Multi-Frame Generation operates via D3D11on12 and requires an in-game DLSS setting.
+- **Dynamic Route Advisories Engine**: Implemented `get_mfg_advisory_with_route` evaluating active route and backend limitations across Vulkan, Feeder, and DirectX 11 with zero user lockouts.
+- **Cumulative Added History Rollback Hardening**: Introduced `added_history.json` immune to 5-manifest rollback pruning, guaranteeing 100% clean rollback without orphan DLLs and preserving unmodded vanilla backups through successive route hot-swaps.
+
+### Fixed
+- **Scanner Native DLSS-G Isolation**: Verified rollback journal history to prevent mod-deployed `nvngx_dlssg.dll` from triggering false-positive native DLSS-G detection.
+- **Frame Generation Scanner Heuristic**: Removed `sl.dlss.dll` from the Frame Generation scanner checks and gated Vulkan titles from reporting false positive Frame Generation support (`Unsupported (Vulkan API)`).
+- **Vulkan Layer Test Isolation**: Sandboxed test environments for `vulkan_layer.rs` so automated tests never pollute the host system registry.
+- **Multilingual Copy Refresh**: Updated `feature_mfg_desc` and notes across all 14 supported languages to reference the Universal RTX 40 MFG module.
+
+---
+
 ## [2.0.0] - 2026-09-25
 
 ### Added

@@ -27,10 +27,13 @@ pub const FONTATLAS_PNG_SHA256: &str = "11a711a8167d1c1606892e6fa6f661a477e749d6
 pub const MFG_10_URL: &str = "https://github.com/mavismmg/MFGAdaUnlock-RenoDx/releases/download/1.0/renodx-mfgunlock.addon64";
 pub const MFG_10_SHA256: &str = "f9f10c685e3e89077f751df2394a1629615a56b58d111dff26b39894e772d50e";
 
-pub const OPTISCALER_084_URL: &str = "https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases/download/v0.8.4/OptiScaler-NR-v0.8.4.zip";
-pub const OPTISCALER_084_SHA256: &str = "8789912859882e66b3f3a1aa768db947da779dfd65225df69ea919052e73a2e4";
+pub const RTX40MFG_FALLBACK_URL: &str = "https://github.com/dashdogy/RTX40MFG-Unlock/releases/download/v1.3.3-hotfix.2/RTXMFG-v1.3.3-hotfix.2.zip";
+pub const OPTISCALER_MFG_FALLBACK_URL: &str = "https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases/download/v0.8.4/OptiScaler-NR-v0.8.4-rtx40-mfg.zip";
+pub const OPTISCALER_084_URL: &str = "https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases/download/v0.8.4/OptiScaler-NR-v0.8.4-rtx40-mfg.zip";
+pub const OPTISCALER_084_SHA256: &str = "5be8c512a0c423a81a974a1a1976486cb1b8b0a2231d8c407336f5dc3ace95cc";
 
 pub const DLSS_MIP_FIX_URL: &str = "https://github.com/bookamp/dlss-studio/releases/latest/download/dlss-mip-fix.addon64";
+pub const DLSS_NR_URL: &str = "https://github.com/bookamp/dlss-studio/releases/latest/download/dlss-nr.addon64";
 
 pub const RENODX_DLSS5_URL: &str = "https://github.com/yumlevi/renodx-dlss-installer/releases/download/latest/renodx-dlss5.addon64";
 pub const STREAMLINE_ZIP_URL: &str = "https://github.com/yumlevi/renodx-dlss-installer/releases/download/latest/streamline.zip";
@@ -887,9 +890,27 @@ pub fn is_feeder_cached() -> bool {
 
 /// Checks whether the RenoDX v4.7 Integrated Engine is cached on disk
 pub fn is_renodx_engine_cached() -> bool {
+    if std::path::Path::new("target/release/data/components/renodx-dlss5/renodx-dlss5.addon64").is_file()
+        || std::path::Path::new("target/debug/data/components/renodx-dlss5/renodx-dlss5.addon64").is_file()
+        || std::path::Path::new("dist/renodx-dlss5.addon64").is_file()
+        || std::path::Path::new("dist/renodx-dlss.addon64").is_file()
+    {
+        return true;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            if parent.join("renodx-dlss5.addon64").is_file()
+                || parent.join("renodx-dlss.addon64").is_file()
+            {
+                return true;
+            }
+        }
+    }
     let root = get_components_root();
     root.join("renodx-dlss5").join("renodx-dlss5.addon64").is_file()
         || root.join("renodx-dlss5.addon64").is_file()
+        || root.join("renodx-dlss").join("renodx-dlss.addon64").is_file()
+        || root.join("renodx-dlss.addon64").is_file()
 }
 
 /// Checks whether the D3D12 Mip Fix companion is cached on disk
@@ -914,13 +935,88 @@ pub fn is_dlss5_d3d12_fix_cached() -> bool {
         || root.join("dlss5-d3d12-fix.addon64").is_file()
 }
 
-/// Checks whether the OptiScaler runtime is cached on disk
+/// Queries GitHub API for the latest release asset matching a pattern.
+/// Returns (download_url, tag_name) or Err.
+pub async fn resolve_github_latest_asset<F>(repo: &str, matcher: F) -> Result<(String, String), String>
+where
+    F: Fn(&str) -> bool,
+{
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("Mozilla/5.0 (Windows NT 10.0; Win64; x64) DLSS-Studio/", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(6))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let url = format!("https://api.github.com/repos/{}/releases", repo);
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API {} returned HTTP {}", url, resp.status()));
+    }
+    let releases: Vec<serde_json::Value> = resp.json().await.map_err(|e| e.to_string())?;
+    for rel in releases {
+        let tag = rel.get("tag_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if let Some(assets) = rel.get("assets").and_then(|v| v.as_array()) {
+            for asset in assets {
+                let name = asset.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                if matcher(name) {
+                    if let Some(dl_url) = asset.get("browser_download_url").and_then(|v| v.as_str()) {
+                        return Ok((dl_url.to_string(), tag));
+                    }
+                }
+            }
+        }
+    }
+    Err("No matching asset found in releases".to_string())
+}
+
+/// Resolves the latest download URL and tag for Dashdogy's RTX40MFG-Unlock dynamically
+pub async fn resolve_latest_dashdogy_mfg() -> (String, String) {
+    if let Ok((url, tag)) = resolve_github_latest_asset("dashdogy/RTX40MFG-Unlock", |name| {
+        name.starts_with("RTXMFG-") && name.ends_with(".zip")
+    }).await {
+        return (url, tag);
+    }
+    (
+        RTX40MFG_FALLBACK_URL.to_string(),
+        "v1.3.3-hotfix.2".to_string(),
+    )
+}
+
+/// Resolves the latest download URL and tag for wilsjo2's OptiScaler with integrated RTX40-MFG dynamically
+pub async fn resolve_latest_optiscaler_mfg() -> (String, String) {
+    if let Ok((url, tag)) = resolve_github_latest_asset("wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass", |name| {
+        name.starts_with("OptiScaler-NR-") && name.contains("rtx40-mfg") && name.ends_with(".zip")
+    }).await {
+        return (url, tag);
+    }
+    (
+        OPTISCALER_MFG_FALLBACK_URL.to_string(),
+        "v0.8.4".to_string(),
+    )
+}
+
+/// Checks whether Standalone RTX40MFG-Unlock (Dashdogy) is cached on disk
+pub fn is_rtxmfg_cached() -> bool {
+    let root = get_components_root();
+    root.join("mfg-standalone").join("RTXMFG.dll").is_file()
+        || root.join("RTXMFG.dll").is_file()
+}
+
+/// Checks whether the OptiScaler runtime is cached on disk (supporting any version dynamically)
 pub fn is_optiscaler_cached() -> bool {
     let root = get_components_root();
-    root.join("OptiScaler-0.8.4-dlssnr").join("OptiScaler.dll").is_file()
-        || root.join("OptiScaler-0.8.3-dlssnr").join("OptiScaler.dll").is_file()
-        || root.join("OptiScaler-0.7.7-dlssnr").join("OptiScaler.dll").is_file()
-        || root.join("OptiScaler.dll").is_file()
+    if root.join("OptiScaler.dll").is_file() {
+        return true;
+    }
+    if let Ok(entries) = fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() && p.join("OptiScaler.dll").is_file() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Checks whether Streamline Runtime is cached on disk
@@ -943,6 +1039,7 @@ pub fn are_all_mandatory_components_cached() -> bool {
         && is_renodx_engine_cached()
         && is_dlss5_d3d12_fix_cached()
         && is_optiscaler_cached()
+        && is_rtxmfg_cached()
         && is_reshade_cached()
         && is_streamline_cached()
         && is_dgvoodoo_cached()
@@ -973,13 +1070,25 @@ where
 {
     let mut log = Vec::new();
     let mut errors = Vec::new();
-    const TOTAL_STEPS: usize = 8;
+    const TOTAL_STEPS: usize = 9;
 
-    // 1. RenoDX v4.7 Integrated Engine
+    // 1. RenoDX v4.7 Integrated DLSS 5 Engine
+    let comp_root = get_components_root();
+    let renodx_dir = comp_root.join("renodx-dlss5");
+    let target = renodx_dir.join("renodx-dlss5.addon64");
+    for local_cand in &[
+        PathBuf::from("target/release/data/components/renodx-dlss5/renodx-dlss5.addon64"),
+        PathBuf::from("target/debug/data/components/renodx-dlss5/renodx-dlss5.addon64"),
+        PathBuf::from("dist/renodx-dlss5.addon64"),
+    ] {
+        if local_cand.is_file() && !target.is_file() {
+            let _ = fs::create_dir_all(&renodx_dir);
+            let _ = fs::copy(local_cand, &target);
+            break;
+        }
+    }
+
     if !is_renodx_engine_cached() {
-        let comp_root = get_components_root();
-        let renodx_dir = comp_root.join("renodx-dlss5");
-        let target = renodx_dir.join("renodx-dlss5.addon64");
         let _ = fs::create_dir_all(&renodx_dir);
         let mut step_prog = |mut p: DownloadProgress| {
             p.percentage = ((0.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
@@ -999,6 +1108,29 @@ where
     }
 
     // 2. DLSS Studio D3D12 Mip Companion
+    let fix_dir = comp_root.join("dlss-mip-fix");
+    let fix_target = fix_dir.join("dlss-mip-fix.addon64");
+    for local_cand in &[
+        PathBuf::from("target/release/dlss-mip-fix.addon64"),
+        PathBuf::from("target/release/dlss_mip_addon.dll"),
+        PathBuf::from("dist/dlss-mip-fix.addon64"),
+    ] {
+        if local_cand.is_file() {
+            let _ = fs::create_dir_all(&fix_dir);
+            let _ = fs::copy(local_cand, &fix_target);
+            break;
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let next_to_exe = parent.join("dlss-mip-fix.addon64");
+            if next_to_exe.is_file() {
+                let _ = fs::create_dir_all(&fix_dir);
+                let _ = fs::copy(&next_to_exe, &fix_target);
+            }
+        }
+    }
+
     if !is_dlss5_d3d12_fix_cached() {
         let comp_root = get_components_root();
         let fix_dir = comp_root.join("dlss-mip-fix");
@@ -1076,24 +1208,56 @@ where
         let _ = ensure_feeder_components(&mut log).await;
     }
 
-    // 5. OptiScaler DLSS-NR v0.8.4
-    if !is_optiscaler_cached() {
+    // 5. Standalone Universal RTX40MFG-Unlock (Dashdogy)
+    if !is_rtxmfg_cached() {
         let comp_root = get_components_root();
-        let opti_dir = comp_root.join("OptiScaler-0.8.4-dlssnr");
-        let zip_path = comp_root.join("OptiScaler-NR-v0.8.4.zip");
+        let mfg_dir = comp_root.join("mfg-standalone");
+        let zip_path = comp_root.join("RTXMFG-latest.zip");
+        let (dl_url, tag) = resolve_latest_dashdogy_mfg().await;
         let mut step_prog = |mut p: DownloadProgress| {
             p.percentage = ((4.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
             progress_fn(p);
         };
         if let Err(e) = download_file_with_progress(
-            OPTISCALER_084_URL,
+            &dl_url,
             &zip_path,
-            OPTISCALER_084_SHA256,
-            "OptiScaler DLSS-NR v0.8.4",
+            "",
+            &format!("Universal RTX40MFG-Unlock ({})", tag),
+            "rtxmfg",
+            &mut step_prog,
+        ).await {
+            crate::core::state::log_message(&format!("@{{log_download_error|RTX40MFG-Unlock|{}}}", e));
+            errors.push(format!("RTX40MFG-Unlock: {}", e));
+        } else if let Ok(file) = fs::File::open(&zip_path) {
+            let mfg_dir_c = mfg_dir.clone();
+            let zip_path_c = zip_path.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = extract_zip(file, &mfg_dir_c);
+                let _ = fs::remove_file(&zip_path_c);
+            }).await;
+        }
+    }
+
+    // 6. OptiScaler DLSS-NR with integrated RTX40-MFG (wilsjo2)
+    if !is_optiscaler_cached() {
+        let comp_root = get_components_root();
+        let (dl_url, tag) = resolve_latest_optiscaler_mfg().await;
+        let tag_clean = tag.trim_start_matches('v');
+        let opti_dir = comp_root.join(format!("OptiScaler-{}-rtx40-mfg", tag_clean));
+        let zip_path = comp_root.join("OptiScaler-latest.zip");
+        let mut step_prog = |mut p: DownloadProgress| {
+            p.percentage = ((5.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
+            progress_fn(p);
+        };
+        if let Err(e) = download_file_with_progress(
+            &dl_url,
+            &zip_path,
+            "",
+            &format!("OptiScaler DLSS-NR ({})", tag),
             "optiscaler",
             &mut step_prog,
         ).await {
-            crate::core::state::log_message(&format!("@{{log_download_error|OptiScaler v0.8.4|{}}}", e));
+            crate::core::state::log_message(&format!("@{{log_download_error|OptiScaler|{}}}", e));
             errors.push(format!("OptiScaler DLSS-NR: {}", e));
         } else if let Ok(file) = fs::File::open(&zip_path) {
             let opti_dir_c = opti_dir.clone();
@@ -1105,12 +1269,12 @@ where
         }
     }
 
-    // 6. ReShade 6.8.0 Add-on Runtime
+    // 7. ReShade 6.8.0 Add-on Runtime
     if !is_reshade_cached() {
         let comp_root = get_components_root();
         let setup_path = comp_root.join("ReShade_Setup_6.8.0_Addon.exe");
         let mut step_prog = |mut p: DownloadProgress| {
-            p.percentage = ((5.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
+            p.percentage = ((6.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
             progress_fn(p);
         };
         if let Err(e) = download_file_with_progress(
@@ -1133,13 +1297,13 @@ where
         }
     }
 
-    // 7. Streamline Runtime v2.14.1
+    // 8. Streamline Runtime v2.14.1
     if !is_streamline_cached() {
         let comp_root = get_components_root();
         let streamline_dir = comp_root.join("streamline-2.14.1");
         let zip_path = comp_root.join("streamline.zip");
         let mut step_prog = |mut p: DownloadProgress| {
-            p.percentage = ((6.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
+            p.percentage = ((7.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
             progress_fn(p);
         };
         if let Err(e) = download_file_with_progress(
@@ -1162,12 +1326,12 @@ where
         }
     }
 
-    // 8. dgVoodoo2 v2.87.5 (Legacy DirectX Wrapper)
+    // 9. dgVoodoo2 v2.87.5 (Legacy DirectX Wrapper)
     if !is_dgvoodoo_cached() {
         let comp_root = get_components_root();
         let zip_path = comp_root.join("dgVoodoo2_87_5.zip");
         let mut step_prog = |mut p: DownloadProgress| {
-            p.percentage = ((7.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
+            p.percentage = ((8.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
             progress_fn(p);
         };
         if let Err(e) = download_file_with_progress(

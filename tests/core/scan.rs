@@ -52,7 +52,7 @@ use std::path::{Path, PathBuf};
         let g = scan_game_directory(&temp_dir).expect("Synthetic Vulkan game must be scanned");
         assert_eq!(g.api, "Vulkan");
         assert!(!g.has_frame_generation, "Native frame generation is false");
-        assert!(g.can_inject_fg, "can_inject_fg must be true for 64-bit Vulkan game with DLSS 2");
+        assert!(!g.can_inject_fg, "can_inject_fg must be false for Vulkan game");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -100,7 +100,12 @@ use std::path::{Path, PathBuf};
         let g = scan_game_directory(&temp_dir).expect("Synthetic DX11 game must be scanned");
         assert_eq!(g.api, "DirectX 11");
         assert!(!g.has_frame_generation, "OptiScaler streamline folder must NOT flag has_frame_generation=true");
-        assert!(!g.can_inject_fg, "can_inject_fg must be false for 64-bit DX11 game without native DLSS-G");
+        assert!(g.can_inject_fg, "can_inject_fg must be true for 64-bit DX11 game with native DLSS via D3D11on12 bridge");
+
+        // Now remove nvngx_dlss.dll and verify can_inject_fg becomes false
+        fs::remove_file(bin_dir.join("nvngx_dlss.dll")).unwrap();
+        let g2 = scan_game_directory(&temp_dir).expect("Synthetic DX11 game without DLSS must be scanned");
+        assert!(!g2.can_inject_fg, "can_inject_fg must be false for 64-bit DX11 game without native DLSS");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -122,7 +127,7 @@ use std::path::{Path, PathBuf};
                 api: api.clone(),
                 dlss_version: Some("2.4.2".to_string()),
                 has_frame_generation: false,
-                can_inject_fg: true,
+                can_inject_fg: false,
                 optiscaler_installed: false,
                 optiscaler_presr: false,
                 optiscaler_passes: 1,
@@ -144,13 +149,13 @@ use std::path::{Path, PathBuf};
                 has_anti_cheat: false,
             };
             assert!(!dlss_studio::core::install_routes::is_native_dlss_supported(&fake_bg3), "Vulkan game must NOT support Native DLSS (RenoDX)");
-            assert!(fake_bg3.can_inject_fg, "BG3 Vulkan must support frame generation injection");
-            assert!(dlss_studio::core::install_routes::is_frame_generation_supported(&fake_bg3), "BG3 Vulkan must be recognized as frame generation supported");
+            assert!(!fake_bg3.can_inject_fg, "BG3 Vulkan must NOT support frame generation injection");
+            assert!(!dlss_studio::core::install_routes::is_frame_generation_supported(&fake_bg3), "BG3 Vulkan must NOT be recognized as frame generation supported");
             let routes = dlss_studio::core::install_routes::routes_for(&fake_bg3);
             assert!(!routes.contains(&dlss_studio::core::install_routes::InstallRoute::Native), "Routes must NOT contain Native for BG3");
             assert!(routes.contains(&dlss_studio::core::install_routes::InstallRoute::Feeder), "Routes must contain Feeder for BG3");
 
-            // Verify bg3_dx11.exe behaves as DirectX 11 and rejects frame generation injection
+            // Verify bg3_dx11.exe behaves as DirectX 11 and supports frame generation injection via bridge
             let dx11_path = Path::new(r"E:\Games\GoG\Baldurs Gate 3\bin\bg3_dx11.exe");
             if dx11_path.exists() {
                 let dx11_pe = inspect_pe(dx11_path).unwrap();
@@ -159,11 +164,17 @@ use std::path::{Path, PathBuf};
 
                 let fake_bg3_dx11 = GameEntry {
                     api: dx11_api,
-                    can_inject_fg: false,
+                    can_inject_fg: true,
                     ..fake_bg3.clone()
                 };
-                assert!(!fake_bg3_dx11.can_inject_fg, "BG3 DX11 must NOT support frame generation injection");
-                assert!(!dlss_studio::core::install_routes::is_frame_generation_supported(&fake_bg3_dx11), "BG3 DX11 must reject frame generation");
+                assert!(fake_bg3_dx11.can_inject_fg, "BG3 DX11 must support frame generation injection via D3D11on12 bridge");
+                assert!(dlss_studio::core::install_routes::is_frame_generation_supported(&fake_bg3_dx11), "BG3 DX11 must support frame generation via D3D11on12 bridge");
+
+                // If DLSS is missing, DX11 must reject frame generation
+                let mut fake_bg3_dx11_no_dlss = fake_bg3_dx11.clone();
+                fake_bg3_dx11_no_dlss.dlss_version = None;
+                fake_bg3_dx11_no_dlss.can_inject_fg = false;
+                assert!(!dlss_studio::core::install_routes::is_frame_generation_supported(&fake_bg3_dx11_no_dlss), "DX11 without DLSS must reject frame generation");
             }
         }
     }
@@ -1091,6 +1102,66 @@ use std::path::{Path, PathBuf};
 
         let api = detect_api(&dx11_exe, &["d3d11.dll".to_string()]);
         assert_eq!(api, Some("DirectX 11".to_string()), "Explicit dx11 filename must override folder-level D3D12 files");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_sl_dlss_does_not_flag_frame_generation() {
+        let temp_dir = std::env::temp_dir().join(format!("test_sl_dlss_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let dx12_exe = temp_dir.join("game.exe");
+        let mut exe_bytes = vec![0u8; 10000];
+        exe_bytes[100..118].copy_from_slice(b"D3D12CreateDevice\x00");
+        fs::write(&dx12_exe, &exe_bytes).unwrap();
+
+        // sl.dlss.dll is Super Resolution only, not Frame Generation
+        fs::write(temp_dir.join("sl.dlss.dll"), b"fake_sl_dlss").unwrap();
+
+        let scanned = scan_game_directory(&temp_dir).expect("Game must be scanned");
+        assert!(!scanned.has_frame_generation, "sl.dlss.dll alone must NOT flag has_frame_generation as true");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_mod_added_dlssg_does_not_flag_native_frame_generation() {
+        let temp_dir = std::env::temp_dir().join(format!("test_mod_dlssg_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let dx12_exe = temp_dir.join("game.exe");
+        let mut exe_bytes = vec![0u8; 10000];
+        exe_bytes[100..118].copy_from_slice(b"D3D12CreateDevice\x00");
+        fs::write(&dx12_exe, &exe_bytes).unwrap();
+
+        fs::write(temp_dir.join("nvngx_dlss.dll"), b"fake_dlss").unwrap();
+        fs::write(temp_dir.join("nvngx_dlssg.dll"), b"fake_dlssg").unwrap();
+
+        // Simulate DLSS Studio manifest recording nvngx_dlssg.dll as mod-added
+        let backup_dir = temp_dir.join("_DLSS5_Backup");
+        fs::create_dir_all(&backup_dir).unwrap();
+        let manifest = dlss_studio::core::journal::ActiveManifest {
+            version: 1,
+            date: "now".to_string(),
+            route: "optiscaler".to_string(),
+            game: None,
+            game_exe: Some("game.exe".to_string()),
+            backup_prefix: None,
+            replaced: Vec::new(),
+            added: vec!["nvngx_dlssg.dll".to_string()],
+            added_dirs: Vec::new(),
+            mfg_unlock: Some(true),
+            mfg_multiplier: Some(4),
+            nr_style_enabled: None,
+            nr_style: None,
+            opti_presr: None,
+            opti_passes: None,
+        };
+        fs::write(backup_dir.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let scanned = scan_game_directory(&temp_dir).expect("Game must be scanned");
+        assert!(!scanned.has_frame_generation, "Mod-added nvngx_dlssg.dll must NOT be recognized as native Frame Generation");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

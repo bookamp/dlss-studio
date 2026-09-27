@@ -14,6 +14,8 @@ pub struct OptiScalerOptions {
     pub mfg_unlock: bool,
     pub target_exe_name: String,
     pub nr_style: usize,
+    pub api: String,
+    pub mfg_multiplier: u32,
 }
 
 impl Default for OptiScalerOptions {
@@ -24,6 +26,8 @@ impl Default for OptiScalerOptions {
             mfg_unlock: false,
             target_exe_name: String::new(),
             nr_style: 0,
+            api: "DirectX 12".to_string(),
+            mfg_multiplier: 4,
         }
     }
 }
@@ -104,6 +108,8 @@ pub fn generate_optiscaler_ini(
     external_mfg: bool,
     target_exe: Option<&str>,
     nr_style: usize,
+    api: Option<&str>,
+    mfg_multiplier: u32,
 ) -> String {
     let mut text = base_text.to_string();
 
@@ -116,10 +122,56 @@ pub fn generate_optiscaler_ini(
     }
     text = set_ini(&text, "Plugins", "LoadReshade", "false");
     text = set_ini(&text, "FrameGen", "External", if external_mfg { "true" } else { "false" });
-    text = set_ini(&text, "DLSSG", "InterpolationCount", "auto");
-    text = set_ini(&text, "DLSSG", "OverrideInterpolationCount", "auto");
+
+    if external_mfg {
+        text = set_ini(&text, "FrameGen", "Enabled", "true");
+        let is_dx11 = api.map(|a| a.to_lowercase().contains("11")).unwrap_or(false);
+        if is_dx11 {
+            text = set_ini(&text, "FrameGen", "FGInput", "upscaler");
+            text = set_ini(&text, "FrameGen", "FGOutput", "dlssg");
+            text = set_ini(&text, "FrameGen", "FGNvngxReplacement", "None");
+            text = set_ini(&text, "OptiFG", "HUDFix", "true");
+            text = set_ini(&text, "Dx11withDx12", "BuiltinMfgUnlock", "true");
+            text = set_ini(&text, "Dx11withDx12", "UseDelayedInit", "true");
+        } else {
+            text = set_ini(&text, "FrameGen", "FGInput", "auto");
+            text = set_ini(&text, "FrameGen", "FGOutput", "auto");
+            text = set_ini(&text, "Dx11withDx12", "BuiltinMfgUnlock", "true");
+        }
+        text = set_ini(&text, "MfgUnlock", "Enabled", "true");
+        text = set_ini(&text, "MfgUnlock", "Multiplier", &mfg_multiplier.to_string());
+        text = set_ini(&text, "DLSSG", "Multiplier", &mfg_multiplier.to_string());
+        text = set_ini(&text, "DLSSG", "AdaMfgUnlock", "true");
+        let interp_count = if mfg_multiplier >= 2 { mfg_multiplier - 1 } else { 1 };
+        text = set_ini(&text, "DLSSG", "InterpolationCount", &interp_count.to_string());
+        text = set_ini(&text, "DLSSG", "OverrideInterpolationCount", "true");
+    } else {
+        text = set_ini(&text, "FrameGen", "Enabled", "false");
+        text = set_ini(&text, "Dx11withDx12", "BuiltinMfgUnlock", "false");
+        text = set_ini(&text, "MfgUnlock", "Enabled", "false");
+        text = set_ini(&text, "MfgUnlock", "Multiplier", "auto");
+        text = set_ini(&text, "DLSSG", "Multiplier", "auto");
+        text = set_ini(&text, "DLSSG", "AdaMfgUnlock", "false");
+        text = set_ini(&text, "DLSSG", "InterpolationCount", "auto");
+        text = set_ini(&text, "DLSSG", "OverrideInterpolationCount", "auto");
+    }
+
     text = set_ini(&text, "Menu", "OverlayMenu", "true");
     text = set_ini(&text, "Menu", "ShortcutKey", "0x2D"); // INSERT key
+
+    if let Some(api_str) = api {
+        let api_lower = api_str.to_lowercase();
+        if api_lower.contains("11") {
+            text = set_ini(&text, "Upscalers", "Dx11Upscaler", "dlss_12");
+        } else if api_lower.contains("vulkan") {
+            text = set_ini(&text, "Upscalers", "VulkanUpscaler", "dlss");
+        } else {
+            text = set_ini(&text, "Upscalers", "Dx12Upscaler", "dlss");
+        }
+    }
+
+    text = set_ini(&text, "Spoofing", "StreamlineSpoofing", "false");
+    text = set_ini(&text, "Spoofing", "Dxgi", "false");
 
     if let Some(exe) = target_exe {
         if !exe.is_empty() {
@@ -138,6 +190,8 @@ pub fn configure_optiscaler_ini(base_text: &str, opts: &OptiScalerOptions) -> St
         opts.mfg_unlock,
         Some(&opts.target_exe_name),
         opts.nr_style,
+        Some(&opts.api),
+        opts.mfg_multiplier,
     )
 }
 
@@ -164,36 +218,84 @@ fn get_component_roots() -> Vec<PathBuf> {
     dirs
 }
 
+/// Scores an OptiScaler candidate directory name.
+/// Builds with "-rtx40-mfg" or "mfg" receive top priority (+10,000,000).
+/// Semver numbers (major, minor, patch) are parsed to prefer newer versions.
+pub fn score_optiscaler_dir(name: &str) -> u64 {
+    let lower = name.to_lowercase();
+    let mut score: u64 = 0;
+    if lower.contains("rtx40-mfg") || lower.contains("rtx40mfg") || lower.contains("mfg") {
+        score += 10_000_000;
+    }
+    let parts: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_digit() && c != '.')
+        .filter(|s| s.contains('.'))
+        .collect();
+    for part in parts {
+        let nums: Vec<u64> = part.split('.').filter_map(|s| s.parse::<u64>().ok()).collect();
+        if nums.len() >= 2 {
+            let major = nums[0];
+            let minor = nums[1];
+            let patch = if nums.len() >= 3 { nums[2] } else { 0 };
+            score += major * 100_000 + minor * 1_000 + patch;
+            break;
+        }
+    }
+    score
+}
+
 /// Locates the OptiScaler component directory containing OptiScaler.dll, OptiScaler.ini, and OptiScaler subfolder.
 pub fn find_optiscaler_payload() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    for root in get_component_roots() {
-        candidates.push(root.join("OptiScaler-0.8.4-dlssnr"));
-        candidates.push(root.join("OptiScaler-0.8.3-dlssnr"));
-        candidates.push(root.join("OptiScaler-0.7.7-dlssnr"));
-        candidates.push(root.join("OptiScaler-DLSSNR-v0.7.7"));
-        candidates.push(root.join("OptiScaler-0.7.6-dlssnr"));
-        candidates.push(root.join("OptiScaler-DLSSNR-v0.7.6"));
-        candidates.push(root.join("OptiScaler-v0.7.6"));
-        candidates.push(root.join("OptiScaler-0.6.2-dlssnr"));
-        candidates.push(root.join("OptiScaler-0.2.0-dlssnr"));
-    }
+    let mut candidates: Vec<(u64, PathBuf)> = Vec::new();
+
+    // 1. Dynamic search across all component roots and app exe ancestors
+    let mut search_dirs = get_component_roots();
     if let Some(exe) = app_exe_dir() {
-        candidates.push(exe.join("components").join("OptiScaler-0.8.4-dlssnr"));
-        candidates.push(exe.join("components").join("OptiScaler-0.8.3-dlssnr"));
-        candidates.push(exe.join("components").join("OptiScaler-0.7.7-dlssnr"));
-        candidates.push(exe.join("components").join("OptiScaler-DLSSNR-v0.7.7"));
-        candidates.push(exe.join("payload").join("OptiScaler-0.7.7-dlssnr"));
-        candidates.push(exe.join("payload").join("OptiScaler-DLSSNR-v0.7.7"));
-        candidates.push(exe.join("components").join("OptiScaler-0.7.6-dlssnr"));
-        candidates.push(exe.join("components").join("OptiScaler-DLSSNR-v0.7.6"));
-        candidates.push(exe.join("payload").join("OptiScaler-0.7.6-dlssnr"));
-        candidates.push(exe.join("payload").join("OptiScaler-DLSSNR-v0.7.6"));
-        candidates.push(exe.join("components").join("OptiScaler-0.6.2-dlssnr"));
-        candidates.push(exe.join("payload").join("OptiScaler-0.6.2-dlssnr"));
+        for ancestor in exe.ancestors().take(4) {
+            search_dirs.push(ancestor.join("components"));
+            search_dirs.push(ancestor.join("payload"));
+        }
     }
 
-    for c in candidates {
+    for dir in &search_dirs {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.to_lowercase().contains("optiscaler") && path.join("OptiScaler.dll").is_file() {
+                        let score = score_optiscaler_dir(&name);
+                        candidates.push((score, path));
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort descending by score
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    if let Some((_, best_path)) = candidates.into_iter().next() {
+        return Some(best_path);
+    }
+
+    // 2. Fallback to hardcoded known locations if directory iteration wasn't available
+    let mut fallback_candidates = Vec::new();
+    for root in get_component_roots() {
+        fallback_candidates.push(root.join("OptiScaler-0.8.5-rtx40-mfg"));
+        fallback_candidates.push(root.join("OptiScaler-0.8.4-dlssnr"));
+        fallback_candidates.push(root.join("OptiScaler-0.8.3-dlssnr"));
+        fallback_candidates.push(root.join("OptiScaler-0.7.7-dlssnr"));
+        fallback_candidates.push(root.join("OptiScaler-DLSSNR-v0.7.7"));
+    }
+    if let Some(exe) = app_exe_dir() {
+        for ancestor in exe.ancestors().take(4) {
+            fallback_candidates.push(ancestor.join("components").join("OptiScaler-0.8.5-rtx40-mfg"));
+            fallback_candidates.push(ancestor.join("components").join("OptiScaler-0.8.4-dlssnr"));
+            fallback_candidates.push(ancestor.join("payload").join("OptiScaler-0.8.4-dlssnr"));
+        }
+    }
+
+    for c in fallback_candidates {
         if c.join("OptiScaler.dll").exists() {
             return Some(c);
         }
@@ -281,19 +383,44 @@ pub fn find_mfg_addon_payload() -> Option<PathBuf> {
 }
 
 
-/// Locates the RenoDX v4.7 Integrated DLSS 5 Engine addon
+/// Locates the authentic RenoDX DLSS 5 add-on (renodx-dlss5 or renodx-dlss)
 pub fn find_renodx_payload() -> Option<PathBuf> {
     let mut candidates = Vec::new();
+    if let Some(exe) = app_exe_dir() {
+        // Direct executable directory (e.g. running from dist/ or portable bundle)
+        candidates.push(exe.join("renodx-dlss5.addon64"));
+        candidates.push(exe.join("renodx-dlss.addon64"));
+
+        for ancestor in exe.ancestors().take(4) {
+            candidates.push(ancestor.join("dist").join("renodx-dlss5.addon64"));
+            candidates.push(ancestor.join("dist").join("renodx-dlss.addon64"));
+            candidates.push(ancestor.join("target").join("release").join("data").join("components").join("renodx-dlss5").join("renodx-dlss5.addon64"));
+            candidates.push(ancestor.join("target").join("debug").join("data").join("components").join("renodx-dlss5").join("renodx-dlss5.addon64"));
+            candidates.push(ancestor.join("components").join("renodx-dlss5").join("renodx-dlss5.addon64"));
+            candidates.push(ancestor.join("components").join("renodx-dlss").join("renodx-dlss.addon64"));
+            candidates.push(ancestor.join("payload").join("renodx-dlss5.addon64"));
+            candidates.push(ancestor.join("payload").join("renodx-dlss.addon64"));
+            candidates.push(ancestor.join("addons").join("renodx-dlss5.addon64"));
+            candidates.push(ancestor.join("addons").join("renodx-dlss.addon64"));
+        }
+    }
+
     for root in get_component_roots() {
+        // 1. RenoDX DLSS 5 tool
         candidates.push(root.join("renodx-dlss5").join("renodx-dlss5.addon64"));
         candidates.push(root.join("renodx-dlss5.addon64"));
         candidates.push(root.join("addons").join("renodx-dlss5.addon64"));
+
+        // 2. ShortFuse DLSS Tool
+        candidates.push(root.join("renodx-dlss").join("renodx-dlss.addon64"));
+        candidates.push(root.join("renodx-dlss.addon64"));
+        candidates.push(root.join("addons").join("renodx-dlss.addon64"));
     }
-    if let Some(exe) = app_exe_dir() {
-        candidates.push(exe.join("components").join("renodx-dlss5").join("renodx-dlss5.addon64"));
-        candidates.push(exe.join("payload").join("renodx-dlss5.addon64"));
-        candidates.push(exe.join("addons").join("renodx-dlss5.addon64"));
-    }
+
+    candidates.push(PathBuf::from("target/release/data/components/renodx-dlss5/renodx-dlss5.addon64"));
+    candidates.push(PathBuf::from("target/debug/data/components/renodx-dlss5/renodx-dlss5.addon64"));
+    candidates.push(PathBuf::from("dist/renodx-dlss5.addon64"));
+    candidates.push(PathBuf::from("dist/renodx-dlss.addon64"));
 
     for c in candidates {
         if c.is_file() {
@@ -306,6 +433,23 @@ pub fn find_renodx_payload() -> Option<PathBuf> {
 /// Locates NIGos's DLSS 5 D3D12 Mip Chain Companion addon
 pub fn find_dlss5_d3d12_fix_payload() -> Option<PathBuf> {
     let mut candidates = Vec::new();
+    if let Some(exe) = app_exe_dir() {
+        candidates.push(exe.join("dlss-mip-fix.addon64"));
+        candidates.push(exe.join("dlss5-d3d12-fix.addon64"));
+
+        for ancestor in exe.ancestors().take(4) {
+            candidates.push(ancestor.join("dist").join("dlss-mip-fix.addon64"));
+            candidates.push(ancestor.join("target").join("release").join("dlss-mip-fix.addon64"));
+            candidates.push(ancestor.join("target").join("release").join("dlss_mip_addon.dll"));
+            candidates.push(ancestor.join("components").join("dlss-mip-fix").join("dlss-mip-fix.addon64"));
+            candidates.push(ancestor.join("components").join("dlss5-d3d12-fix").join("dlss5-d3d12-fix.addon64"));
+            candidates.push(ancestor.join("payload").join("dlss-mip-fix.addon64"));
+            candidates.push(ancestor.join("payload").join("dlss5-d3d12-fix.addon64"));
+            candidates.push(ancestor.join("addons").join("dlss-mip-fix.addon64"));
+            candidates.push(ancestor.join("addons").join("dlss5-d3d12-fix.addon64"));
+        }
+    }
+
     for root in get_component_roots() {
         candidates.push(root.join("dlss-mip-fix").join("dlss-mip-fix.addon64"));
         candidates.push(root.join("dlss-mip-fix.addon64"));
@@ -314,14 +458,7 @@ pub fn find_dlss5_d3d12_fix_payload() -> Option<PathBuf> {
         candidates.push(root.join("dlss5-d3d12-fix.addon64"));
         candidates.push(root.join("addons").join("dlss5-d3d12-fix.addon64"));
     }
-    if let Some(exe) = app_exe_dir() {
-        candidates.push(exe.join("components").join("dlss-mip-fix").join("dlss-mip-fix.addon64"));
-        candidates.push(exe.join("payload").join("dlss-mip-fix.addon64"));
-        candidates.push(exe.join("addons").join("dlss-mip-fix.addon64"));
-        candidates.push(exe.join("components").join("dlss5-d3d12-fix").join("dlss5-d3d12-fix.addon64"));
-        candidates.push(exe.join("payload").join("dlss5-d3d12-fix.addon64"));
-        candidates.push(exe.join("addons").join("dlss5-d3d12-fix.addon64"));
-    }
+
     candidates.push(PathBuf::from("target/release/dlss_mip_addon.dll"));
     candidates.push(PathBuf::from("target/release/dlss-mip-fix.addon64"));
     candidates.push(PathBuf::from("dist/dlss-mip-fix.addon64"));
@@ -382,21 +519,43 @@ pub fn find_dlssnr_payload() -> Option<PathBuf> {
     None
 }
 
-/// Locates Dashdogy's Universal RTXMFG v1.3.2 standalone DLL (RTXMFG.dll)
+/// Locates Dashdogy's Universal RTXMFG standalone DLL (RTXMFG.dll or RTX40MFG.dll)
 pub fn find_standalone_mfg_payload() -> Option<PathBuf> {
     let mut candidates = Vec::new();
     candidates.push(PathBuf::from(r"payload\mfg-standalone\RTXMFG.dll"));
     candidates.push(PathBuf::from(r"components\mfg-standalone\RTXMFG.dll"));
+    candidates.push(PathBuf::from(r"payload\mfg-standalone\RTX40MFG.dll"));
+    candidates.push(PathBuf::from(r"components\mfg-standalone\RTX40MFG.dll"));
+
     for root in get_component_roots() {
         candidates.push(root.join("mfg-standalone").join("RTXMFG.dll"));
+        candidates.push(root.join("mfg-standalone").join("RTX40MFG.dll"));
         candidates.push(root.join("RTXMFG.dll"));
+        candidates.push(root.join("RTX40MFG.dll"));
+
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    let name = entry.file_name().to_string_lossy().to_string().to_lowercase();
+                    if name.contains("mfg") || name.contains("rtx") {
+                        candidates.push(p.join("RTXMFG.dll"));
+                        candidates.push(p.join("RTX40MFG.dll"));
+                    }
+                }
+            }
+        }
     }
     if let Some(exe) = app_exe_dir() {
         for ancestor in exe.ancestors().take(4) {
             candidates.push(ancestor.join("payload").join("mfg-standalone").join("RTXMFG.dll"));
+            candidates.push(ancestor.join("payload").join("mfg-standalone").join("RTX40MFG.dll"));
             candidates.push(ancestor.join("payload").join("RTXMFG.dll"));
+            candidates.push(ancestor.join("payload").join("RTX40MFG.dll"));
             candidates.push(ancestor.join("components").join("mfg-standalone").join("RTXMFG.dll"));
-            candidates.push(ancestor.join("RTXMFG.dll"));
+            candidates.push(ancestor.join("components").join("mfg-standalone").join("RTX40MFG.dll"));
+            candidates.push(ancestor.join("components").join("RTXMFG.dll"));
+            candidates.push(ancestor.join("components").join("RTX40MFG.dll"));
         }
     }
 
@@ -685,7 +844,7 @@ pub fn is_known_mod_file(dest: &Path) -> bool {
     }
     if dest.components().any(|c| {
         let s = c.as_os_str().to_string_lossy();
-        s.eq_ignore_ascii_case("OptiScaler") || s.eq_ignore_ascii_case("host64")
+        s.eq_ignore_ascii_case("OptiScaler") || s.eq_ignore_ascii_case("host64") || s.eq_ignore_ascii_case("NativeMods")
     }) {
         return true;
     }
@@ -768,7 +927,7 @@ pub fn clean_conflicting_route_artifacts(
                 let target_d = crate::core::journal::resolve_target_path(game_dir, rel_dir);
                 if target_d.is_dir() {
                     let lower = rel_dir.to_lowercase();
-                    if lower.contains("reshade") || lower.contains("optiscaler") {
+                    if lower.contains("reshade") || lower.contains("optiscaler") || lower.contains("nativemods") {
                         if fs::remove_dir_all(&target_d).is_ok() {
                             log.push(format!("[SWAP] Purged prior route directory: {}", rel_dir));
                         }
@@ -1202,15 +1361,19 @@ pub fn deploy_optiscaler_with_bundle(opts: &DeployOptions, payloads: &PayloadBun
         mfg_unlock: opts.mfg_unlock,
         target_exe_name: opts.exe_path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string(),
         nr_style: opts.nr_style,
+        api: opts.api.clone(),
+        mfg_multiplier: opts.mfg_multiplier,
     });
     track_and_write(&mut manifest, &opts.game_dir, &backup_dir, &mod_root.join("OptiScaler.ini"), &configured_ini, "config", &mut log)
         .map_err(|e| format!("Failed to write OptiScaler.ini: {}", e))?;
 
-    // 5. Deploy Standalone 4x MFG (Universal RTXMFG v1.3.2) as version.dll
+    // 5. Deploy Standalone 4x MFG (Universal RTXMFG) as version.dll
     // Coexists with OptiScaler via [FrameGen] External=true as documented in RTX40-MFG.md:
     // OptiScaler yields Streamline hooks and passes FrameGen to Dashdogy's RTXMFG.
     if opts.mfg_unlock {
-        if let Some(mfg_dll) = &payloads.rtxmfg_dll {
+        if opts.api == "Vulkan" {
+            log.push("[MFG] Vulkan route active - standalone DirectX 12 RTXMFG hook bypassed".to_string());
+        } else if let Some(mfg_dll) = &payloads.rtxmfg_dll {
             if mfg_dll.is_file() {
                 let version_dest = mod_root.join("version.dll");
                 track_and_copy(&mut manifest, &opts.game_dir, &backup_dir, mfg_dll, &version_dest, "mfg", &mut log)
@@ -1272,9 +1435,42 @@ pub fn deploy_optiscaler_with_bundle(opts: &DeployOptions, payloads: &PayloadBun
                 log.push("[STREAMLINE] Deployed verified Streamline 2.14.1 stack to eliminate OTA ABI version conflicts".to_string());
             }
         }
+    } else if opts.mfg_unlock {
+        // Game has no native Streamline (e.g. DX11 or Vulkan title).
+        // OptiScaler specifically requires Streamline DLLs inside OptiScaler/streamline for DLSS-G output:
+        if let Some(streamline_src) = &payloads.streamline_dir {
+            if streamline_src.is_dir() {
+                let sl_files = [
+                    "sl.interposer.dll",
+                    "sl.common.dll",
+                    "sl.dlss_g.dll",
+                    "sl.reflex.dll",
+                    "sl.pcl.dll",
+                    "nvngx_dlssg.dll",
+                ];
+                let opti_sl_dir = mod_root.join("OptiScaler").join("streamline");
+                for f in &sl_files {
+                    let src_file = streamline_src.join(f);
+                    if src_file.is_file() {
+                        let dest_file = opti_sl_dir.join(f);
+                        track_and_copy(&mut manifest, &opts.game_dir, &backup_dir, &src_file, &dest_file, "streamline", &mut log)
+                            .map_err(|e| format!("Failed to deploy OptiScaler streamline runtime {}: {}", f, e))?;
+                    }
+                }
+                // Also copy nvngx_dlssg.dll to mod root so game DLSS loader detects Frame Generation capability
+                let dlssg_src = streamline_src.join("nvngx_dlssg.dll");
+                if dlssg_src.is_file() {
+                    let dest_file = mod_root.join("nvngx_dlssg.dll");
+                    track_and_copy(&mut manifest, &opts.game_dir, &backup_dir, &dlssg_src, &dest_file, "streamline", &mut log)
+                        .map_err(|e| format!("Failed to deploy nvngx_dlssg.dll to mod root: {}", e))?;
+                }
+                log.push("[STREAMLINE] Deployed verified Streamline 2.14.1 stack into OptiScaler/streamline for DLSS-G FrameGen".to_string());
+            }
+        }
     }
 
-    // 6. Save manifest and history
+
+    // 8. Save manifest and history
     save_manifest(&opts.game_dir, &manifest)
         .map_err(|e| format!("Failed to save manifest: {}", e))?;
 
@@ -1388,16 +1584,30 @@ pub fn deploy_native_dlss5_with_bundle(opts: &DeployOptions, payloads: &PayloadB
     let renodx_active = crate::core::state::is_addon_active(&state, "builtin:renodx");
     let mfg_active = crate::core::state::is_addon_active(&state, "builtin:mfgunlock");
 
-    // 2. Deploy RenoDX v4.7 DLSS 5 add-on if active
+    // 2. Deploy DLSS 5 Neural Rendering engine (dlss-nr, renodx-dlss, or renodx-dlss5) if active
     let mut deployed_addon_stems: Vec<String> = Vec::new();
     if renodx_active {
         if let Some(renodx_src) = &payloads.renodx_dlss5_addon {
             if renodx_src.is_file() {
-                let dest = mod_root.join("renodx-dlss5.addon64");
+                let file_name = renodx_src.file_name().and_then(|n| n.to_str()).unwrap_or("dlss-nr.addon64");
+                let dest = mod_root.join(file_name);
                 track_and_copy(&mut manifest, &opts.game_dir, &backup_dir, renodx_src, &dest, "addon", &mut log)
-                    .map_err(|e| format!("Failed to copy renodx-dlss5.addon64: {}", e))?;
-                deployed_addon_stems.push("renodx-dlss5".to_string());
-                log.push("[ADDON] renodx-dlss5.addon64 deployed (RenoDX v4.7 Integrated DLSS 5 Engine)".to_string());
+                    .map_err(|e| format!("Failed to copy {}: {}", file_name, e))?;
+                let stem = renodx_src.file_stem().and_then(|s| s.to_str()).unwrap_or("dlss-nr").to_string();
+                deployed_addon_stems.push(stem.clone());
+                log.push(format!("[ADDON] {} deployed (DLSS 5 Neural Rendering Engine)", file_name));
+
+                // Clean up any conflicting other neural rendering addons so only one is active
+                let conflicting = ["dlss-nr.addon64", "renodx-dlss.addon64", "renodx-dlss5.addon64"];
+                for c in &conflicting {
+                    if *c != file_name {
+                        let stale = mod_root.join(c);
+                        if stale.is_file() {
+                            let _ = fs::remove_file(&stale);
+                            log.push(format!("[CLEAN] Removed conflicting add-on {}", c));
+                        }
+                    }
+                }
             }
         }
 
@@ -1480,6 +1690,11 @@ pub fn deploy_native_dlss5_with_bundle(opts: &DeployOptions, payloads: &PayloadB
     };
     configured_reshade_ini = set_ini(&configured_reshade_ini, "INPUT", "KeyOverlay", "36,0,0,0");
     configured_reshade_ini = set_ini(&configured_reshade_ini, "OVERLAY", "TutorialProgress", "4");
+
+    // Pure Rust DLSS 5 Neural Rendering Stacker configuration
+    configured_reshade_ini = set_ini(&configured_reshade_ini, "DLSS_NR", "Passes", "1");
+    configured_reshade_ini = set_ini(&configured_reshade_ini, "DLSS_NR", "ResolutionMode", "0");
+    configured_reshade_ini = set_ini(&configured_reshade_ini, "DLSS_NR", "PreSR", "0");
 
     // AGENTS.md Line 15: EnableHooks=2 is NGX-only and must be used where native NGX D3D12 creates are active.
     configured_reshade_ini = set_ini(&configured_reshade_ini, "RenoDX.DLSS5", "EnableHooks", "2");

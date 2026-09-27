@@ -1,6 +1,16 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AddedHistory {
+    #[serde(default)]
+    pub files: BTreeSet<String>,
+    #[serde(default)]
+    pub dirs: BTreeSet<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -102,26 +112,26 @@ pub fn backup_dir(game_dir: &Path) -> PathBuf {
         return direct;
     }
 
-    // 2. Canonicalized path (resolving NTFS Junctions / symlinks like Xbox WindowsApps -> Games\...\Content)
+    // 2. Ancestor of game_dir if game_dir is deeply nested e.g. in "Content/NewMoon/Binaries/WinGDK"
+    for ancestor in game_dir.ancestors().skip(1).take(5) {
+        let p_backup = ancestor.join("_DLSS5_Backup");
+        if p_backup.exists() {
+            return p_backup;
+        }
+    }
+
+    // 3. Canonicalized path (resolving NTFS Junctions / symlinks like Xbox WindowsApps -> Games\...\Content)
     if let Ok(canon) = fs::canonicalize(game_dir) {
         let norm = strip_verbatim(&canon);
         let c_direct = norm.join("_DLSS5_Backup");
         if c_direct.exists() {
             return c_direct;
         }
-        if let Some(parent) = norm.parent() {
-            let p_backup = parent.join("_DLSS5_Backup");
+        for ancestor in norm.ancestors().skip(1).take(5) {
+            let p_backup = ancestor.join("_DLSS5_Backup");
             if p_backup.exists() {
                 return p_backup;
             }
-        }
-    }
-
-    // 3. Parent of game_dir if game_dir is nested e.g. in "Content"
-    if let Some(parent) = game_dir.parent() {
-        let p_backup = parent.join("_DLSS5_Backup");
-        if p_backup.exists() {
-            return p_backup;
         }
     }
 
@@ -286,10 +296,130 @@ pub fn prune_old_manifests(game_dir: &Path, max_keep: usize) -> usize {
     pruned_count
 }
 
+pub fn read_added_history(game_dir: &Path) -> Option<AddedHistory> {
+    let bdir = backup_dir(game_dir);
+    let hist_path = bdir.join("added_history.json");
+    if hist_path.exists() {
+        if let Ok(bytes) = fs::read(&hist_path) {
+            if let Ok(h) = serde_json::from_slice::<AddedHistory>(&bytes) {
+                return Some(h);
+            }
+        }
+    }
+    None
+}
+
+pub fn read_or_backfill_added_history(game_dir: &Path) -> AddedHistory {
+    if let Some(h) = read_added_history(game_dir) {
+        return h;
+    }
+
+    let bdir = backup_dir(game_dir);
+    let mut history = AddedHistory::default();
+
+    if bdir.exists() {
+        // 1. Active manifest
+        if let Some(m) = read_manifest(game_dir) {
+            for f in m.added {
+                history.files.insert(f);
+            }
+            for d in m.added_dirs {
+                history.dirs.insert(d);
+            }
+        }
+
+        // 2. Pending switch manifest
+        let pending_path = bdir.join("pending-switch.json");
+        if let Ok(bytes) = fs::read(&pending_path) {
+            if let Ok(pending) = serde_json::from_slice::<ActiveManifest>(&bytes) {
+                for f in pending.added {
+                    history.files.insert(f);
+                }
+                for d in pending.added_dirs {
+                    history.dirs.insert(d);
+                }
+            }
+        }
+
+        // 3. Historical done manifests
+        if let Ok(entries) = fs::read_dir(&bdir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if fname.starts_with("manifest.json.done-") {
+                    if let Ok(bytes) = fs::read(entry.path()) {
+                        if let Ok(past_m) = serde_json::from_slice::<ActiveManifest>(&bytes) {
+                            for f in past_m.added {
+                                history.files.insert(f);
+                            }
+                            for d in past_m.added_dirs {
+                                history.dirs.insert(d);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !history.files.is_empty() || !history.dirs.is_empty() {
+            let hist_path = bdir.join("added_history.json");
+            if let Ok(bytes) = serde_json::to_vec_pretty(&history) {
+                let _ = fs::write(hist_path, bytes);
+                crate::core::logger::info("journal", &format!("Backfilled cumulative added history for {}: {} files, {} dirs", game_dir.display(), history.files.len(), history.dirs.len()));
+            }
+        }
+    }
+
+    history
+}
+
+pub fn record_added_history(game_dir: &Path, added_files: &[String], added_dirs: &[String]) -> std::io::Result<()> {
+    if added_files.is_empty() && added_dirs.is_empty() {
+        return Ok(());
+    }
+
+    let bdir = backup_dir(game_dir);
+    fs::create_dir_all(&bdir)?;
+
+    let mut history = read_or_backfill_added_history(game_dir);
+    let mut modified = false;
+
+    for f in added_files {
+        if history.files.insert(f.clone()) {
+            modified = true;
+        }
+    }
+    for d in added_dirs {
+        if history.dirs.insert(d.clone()) {
+            modified = true;
+        }
+    }
+
+    if modified || !bdir.join("added_history.json").exists() {
+        let bytes = serde_json::to_vec_pretty(&history)?;
+        fs::write(bdir.join("added_history.json"), bytes)?;
+        crate::core::logger::debug("journal", &format!("Updated cumulative added history for {}: {} files, {} dirs", game_dir.display(), history.files.len(), history.dirs.len()));
+    }
+
+    Ok(())
+}
+
+pub fn archive_added_history(game_dir: &Path) -> std::io::Result<()> {
+    let bdir = backup_dir(game_dir);
+    let hist_path = bdir.join("added_history.json");
+    if hist_path.exists() {
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+        let archive_name = format!("added_history.json.done-{}", ts);
+        let _ = fs::rename(&hist_path, bdir.join(&archive_name));
+        crate::core::logger::info("journal", &format!("Archived cumulative added history to {}", archive_name));
+    }
+    Ok(())
+}
+
 pub fn save_manifest(game_dir: &Path, manifest: &ActiveManifest) -> std::io::Result<()> {
     crate::core::logger::info("journal", &format!("Saving active manifest for {}: route={}, replaced={}, added={}", game_dir.display(), manifest.route, manifest.replaced.len(), manifest.added.len()));
     let bdir = backup_dir(game_dir);
     fs::create_dir_all(&bdir)?;
+    let _ = record_added_history(game_dir, &manifest.added, &manifest.added_dirs);
     let bytes = serde_json::to_vec_pretty(manifest)?;
     fs::write(bdir.join("manifest.json"), bytes)?;
     let _ = prune_old_manifests(game_dir, 5);
@@ -463,18 +593,37 @@ pub fn clean_untracked_mods_with_exe(game_dir: &Path, exe_path: Option<&Path>) -
         }
     }
 
-    // Also purge files listed in any active or recent manifest
+    // Also purge files listed in cumulative added history, active manifest, or recent manifest
+    let history = read_or_backfill_added_history(game_dir);
+    for rel in &history.files {
+        let target_file = resolve_target_path(game_dir, rel);
+        if target_file.exists() && fs::remove_file(&target_file).is_ok() {
+            removed.push(rel.clone());
+        }
+    }
+    for rel in history.dirs.iter().rev() {
+        let target_dir = resolve_target_path(game_dir, rel);
+        if target_dir.exists() && fs::remove_dir_all(&target_dir).is_ok() {
+            removed.push(format!("{}/", rel));
+        }
+    }
+
     if let Some(manifest) = read_manifest(game_dir).or_else(|| read_latest_done_manifest(game_dir)) {
         for rel in &manifest.added {
             let target_file = resolve_target_path(game_dir, rel);
             if target_file.exists() && fs::remove_file(&target_file).is_ok() {
-                removed.push(rel.clone());
+                if !removed.contains(rel) {
+                    removed.push(rel.clone());
+                }
             }
         }
         for rel in manifest.added_dirs.iter().rev() {
             let target_dir = resolve_target_path(game_dir, rel);
             if target_dir.exists() && fs::remove_dir_all(&target_dir).is_ok() {
-                removed.push(format!("{}/", rel));
+                let formatted = format!("{}/", rel);
+                if !removed.contains(&formatted) {
+                    removed.push(formatted);
+                }
             }
         }
     }
@@ -667,6 +816,23 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
         }
     }
 
+    // Purge any file recorded in cumulative added history
+    let history = read_or_backfill_added_history(game_dir);
+    for rel in &history.files {
+        let target_file = resolve_target_path(game_dir, rel);
+        if target_file.exists() {
+            let _ = fs::remove_file(&target_file);
+            crate::core::logger::debug("restore", &format!("Removed historically added file from cumulative history: {}", target_file.display()));
+        }
+    }
+    for rel in history.dirs.iter().rev() {
+        let target_dir = resolve_target_path(game_dir, rel);
+        if target_dir.exists() {
+            let _ = fs::remove_dir_all(&target_dir);
+            crate::core::logger::debug("restore", &format!("Removed historically added directory from cumulative history: {}", target_dir.display()));
+        }
+    }
+
     // Also purge known leftover injected mod files
     let exe_opt = manifest.game_exe.as_ref()
         .or_else(|| manifest.game.as_ref().and_then(|g| g.exe.as_ref()))
@@ -682,6 +848,7 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
         crate::core::logger::info("restore", &format!("Archived manifest to: {}", archive_name));
         let _ = prune_old_manifests(game_dir, 5);
     }
+    let _ = archive_added_history(game_dir);
 
     crate::core::logger::info("restore", &format!("Restore successfully completed for {}", game_dir.display()));
 

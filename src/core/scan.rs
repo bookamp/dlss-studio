@@ -208,7 +208,33 @@ impl GameEntry {
             }
         }
 
-        // 2. Check latest done/reverted manifest in _DLSS5_Backup/manifest.json.done-*
+        // 2. Check cumulative added history
+        let history = crate::core::journal::read_or_backfill_added_history(&self.dir);
+        let was_historically_added = history.files.iter().any(|a| {
+            let lower = a.to_lowercase();
+            lower.ends_with("nvngx_dlss.dll") || lower.ends_with("_nvngx.dll") || lower.ends_with("nvngx.dll")
+        });
+
+        if was_historically_added {
+            let was_replaced = crate::core::journal::read_manifest(&self.dir)
+                .map(|m| m.replaced.iter().any(|r| {
+                    let lower = r.rel.to_lowercase();
+                    lower.ends_with("nvngx_dlss.dll") || lower.ends_with("_nvngx.dll") || lower.ends_with("nvngx.dll")
+                }))
+                .unwrap_or(false)
+                || crate::core::journal::read_latest_done_manifest(&self.dir)
+                .map(|m| m.replaced.iter().any(|r| {
+                    let lower = r.rel.to_lowercase();
+                    lower.ends_with("nvngx_dlss.dll") || lower.ends_with("_nvngx.dll") || lower.ends_with("nvngx.dll")
+                }))
+                .unwrap_or(false);
+
+            if !was_replaced {
+                return false;
+            }
+        }
+
+        // 3. Check latest done/reverted manifest in _DLSS5_Backup/manifest.json.done-*
         if let Some(done_manifest) = crate::core::journal::read_latest_done_manifest(&self.dir) {
             let was_added = done_manifest.added.iter().any(|a| {
                 let lower = a.to_lowercase();
@@ -218,7 +244,7 @@ impl GameEntry {
                 let lower = r.rel.to_lowercase();
                 lower.ends_with("nvngx_dlss.dll") || lower.ends_with("_nvngx.dll") || lower.ends_with("nvngx.dll")
             });
-            if was_added && !was_replaced && (self.optiscaler_installed || self.installed_route.is_some()) {
+            if was_added && !was_replaced {
                 return false;
             }
         }
@@ -1205,6 +1231,7 @@ pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
     }
 
     let mut dlss_files: Vec<(PathBuf, Option<String>)> = Vec::new();
+    let mut fg_files: Vec<(PathBuf, Option<String>)> = Vec::new();
     let mut has_fg = false;
     let mut mfg_addon = false;
     let mut addon_installed = false;
@@ -1319,10 +1346,12 @@ pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
             } else if (file_name == "nvngx_dlss.dll" || file_name == "_nvngx.dll" || file_name == "nvngx.dll" || file_name == "nvngx_dlssnr.dll") && !is_inside_mod_dir {
                 let pe_opt = inspect_pe(path);
                 dlss_files.push((path.to_path_buf(), pe_opt.and_then(|p| p.version)));
-            } else if (file_name == "nvngx_dlssg.dll" || file_name == "sl.dlss_g.dll" || file_name == "sl.dlss.dll" || file_name.contains("framegeneration_dx12") || file_name == "fgvk.dll") && !is_inside_mod_dir {
+            } else if (file_name == "nvngx_dlssg.dll" || file_name == "sl.dlss_g.dll" || file_name.contains("framegeneration_dx12")) && !is_inside_mod_dir {
                 has_fg = true;
                 let pe_opt = inspect_pe(path);
-                dlss_files.push((path.to_path_buf(), pe_opt.and_then(|p| p.version)));
+                let ver = pe_opt.and_then(|p| p.version);
+                fg_files.push((path.to_path_buf(), ver.clone()));
+                dlss_files.push((path.to_path_buf(), ver));
             } else if file_name == "optiscaler.dll" || file_name == "optiscaler.ini" {
                 optiscaler_installed = true;
                 if file_name == "optiscaler.ini" {
@@ -1674,23 +1703,68 @@ pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
         "Added by hand".to_string()
     };
 
-    let is_mod_added_dlss = if let Some(manifest) = crate::core::journal::read_manifest(dir) {
-        if let Some((sr_p, _)) = &sr_file {
-            let rel = sr_p.strip_prefix(dir)
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| sr_p.file_name().unwrap_or_default().to_string_lossy().to_string());
-            manifest.added.iter().any(|a| a.eq_ignore_ascii_case(&rel))
-        } else {
-            false
-        }
+    let is_mod_added_dlss = if let Some((sr_p, _)) = &sr_file {
+        let rel = sr_p.strip_prefix(dir)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| sr_p.file_name().unwrap_or_default().to_string_lossy().to_string());
+
+        let in_active_added = crate::core::journal::read_manifest(dir)
+            .map(|m| m.added.iter().any(|a| a.eq_ignore_ascii_case(&rel)))
+            .unwrap_or(false);
+
+        let in_history = crate::core::journal::read_or_backfill_added_history(dir)
+            .files.iter().any(|a| a.eq_ignore_ascii_case(&rel));
+
+        let was_replaced = crate::core::journal::read_manifest(dir)
+            .map(|m| m.replaced.iter().any(|r| r.rel.eq_ignore_ascii_case(&rel)))
+            .unwrap_or(false)
+            || crate::core::journal::read_latest_done_manifest(dir)
+            .map(|m| m.replaced.iter().any(|r| r.rel.eq_ignore_ascii_case(&rel)))
+            .unwrap_or(false);
+
+        (in_active_added || in_history) && !was_replaced
     } else {
         false
     };
     let has_native_dlss = sr_file.is_some() && !is_mod_added_dlss;
+
+    let fg_file = fg_files.iter().find(|(p, _)| {
+        let n = p.file_name().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+        n == "nvngx_dlssg.dll" || n == "sl.dlss_g.dll" || n.contains("framegeneration_dx12")
+    });
+
+    let is_mod_added_fg = if let Some((fg_p, _)) = &fg_file {
+        let rel = fg_p.strip_prefix(dir)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| fg_p.file_name().unwrap_or_default().to_string_lossy().to_string());
+
+        let in_active_added = crate::core::journal::read_manifest(dir)
+            .map(|m| m.added.iter().any(|a| a.eq_ignore_ascii_case(&rel)))
+            .unwrap_or(false);
+
+        let in_history = crate::core::journal::read_or_backfill_added_history(dir)
+            .files.iter().any(|a| a.eq_ignore_ascii_case(&rel));
+
+        let was_replaced = crate::core::journal::read_manifest(dir)
+            .map(|m| m.replaced.iter().any(|r| r.rel.eq_ignore_ascii_case(&rel)))
+            .unwrap_or(false)
+            || crate::core::journal::read_latest_done_manifest(dir)
+            .map(|m| m.replaced.iter().any(|r| r.rel.eq_ignore_ascii_case(&rel)))
+            .unwrap_or(false);
+
+        (in_active_added || in_history) && !was_replaced
+    } else {
+        false
+    };
+
     let api_lower = chosen.api.to_lowercase();
     let is_dx12 = api_lower.contains("12") || api_lower.contains("d3d12");
     let is_vulkan = api_lower.contains("vulkan");
-    let can_inject_fg = chosen.bitness == 64 && has_native_dlss && !has_fg && (is_dx12 || is_vulkan);
+    let is_dx11 = (api_lower.contains("11") || api_lower == "d3d11") && !is_dx12;
+
+    // Genuine native FG only exists on DX12 if an authentic vanilla FG file is present and not mod-added
+    let has_native_fg = fg_file.is_some() && !is_mod_added_fg && !is_vulkan && !is_dx11;
+    let can_inject_fg = chosen.bitness == 64 && has_native_dlss && !has_native_fg && (is_dx12 || is_dx11);
     let has_anti_cheat = crate::core::install_guards::has_anti_cheat(dir);
 
     Some(GameEntry {
@@ -1702,7 +1776,7 @@ pub fn scan_game_directory<P: AsRef<Path>>(dir: P) -> Option<GameEntry> {
         is_laa: chosen.is_laa,
         api,
         dlss_version,
-        has_frame_generation: has_fg,
+        has_frame_generation: has_native_fg,
         can_inject_fg,
         optiscaler_installed,
         optiscaler_presr,
