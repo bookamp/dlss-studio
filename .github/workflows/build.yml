@@ -1,4 +1,5 @@
 name: Build & Release DLSS Studio
+run-name: "Release ${{ github.ref_name }}: DLSS 5 Studio — Big Picture Mode, Pure Rust Mip Addon, Apollo Streaming & Multilingual Localization"
 
 "on":
   push:
