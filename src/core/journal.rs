@@ -350,6 +350,56 @@ pub fn is_proxy_hook(path: &Path) -> bool {
     false
 }
 
+pub fn is_corrupted_or_mod_backup(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    if is_proxy_hook(path) {
+        return true;
+    }
+    let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+    if fname == "optiscaler.ini"
+        || fname == "optiscaler.log"
+        || fname == "optiscaler.dll"
+        || fname == "reshade.ini"
+        || fname == "reshade.log"
+        || fname == "reshade64.dll"
+        || fname == "reshade32.dll"
+        || fname == "reshade64.json"
+        || fname == "reshadegui.ini"
+        || fname == "reshadepreset.ini"
+        || fname == "nvngx.dll_dlssnr.dll"
+        || fname == "nvngx_dlssnr.dll"
+        || fname == "dlss5-feed.cfg"
+        || fname == "dlss5-feed.log"
+        || fname == "dlss5-feed.addon64"
+        || fname == "dlss5-feed.addon32"
+        || fname == "dlss5-feed-host64.exe"
+        || fname == "dlss-overlay.addon64"
+        || fname == "dlss5-lab-overlay.addon64"
+        || fname == "renodx-dlss5.addon64"
+        || fname == "dlss-mip-fix.addon64"
+        || fname == "dlss-mip-fix.cfg"
+        || fname == "dlss-mip-fix.log"
+        || fname == "dlss5-d3d12-fix.addon64"
+        || fname == "dlss5-d3d12-fix.cfg"
+        || fname == "dlss5-d3d12-fix.log"
+        || fname == "renodx-mfgunlock.addon64"
+        || fname == "dgvoodoo.conf"
+        || fname == "dgvoodoo.log"
+        || fname == "rtxmfg-universal.json"
+        || fname == "rtx40mfg-universal.json"
+        || fname == "sl.pcl.dll"
+        || fname.starts_with("rtxmfg-")
+        || fname.ends_with(".addon64")
+        || fname.ends_with(".addon32")
+        || fname.ends_with(".addon")
+    {
+        return true;
+    }
+    false
+}
+
 pub fn clean_untracked_mods(game_dir: &Path) -> std::io::Result<Vec<String>> {
     clean_untracked_mods_with_exe(game_dir, None)
 }
@@ -451,14 +501,23 @@ pub fn clean_untracked_mods_with_exe(game_dir: &Path, exe_path: Option<&Path>) -
                     || lower == "dlss5-feed.addon64"
                     || lower == "dlss5-feed.addon32"
                     || lower == "dlss5-feed-host64.exe"
+                    || lower == "dlss-overlay.addon64"
                     || lower == "dlss5-lab-overlay.addon64"
                     || lower == "renodx-dlss5.addon64"
+                    || lower == "dlss-mip-fix.addon64"
+                    || lower == "dlss-mip-fix.cfg"
+                    || lower == "dlss-mip-fix.log"
+                    || lower == "dlss5-d3d12-fix.addon64"
+                    || lower == "dlss5-d3d12-fix.cfg"
+                    || lower == "dlss5-d3d12-fix.log"
                     || lower == "renodx-mfgunlock.addon64"
                     || lower == "dgvoodoo.conf"
                     || lower == "dgvoodoo.log"
                     || lower == "nvngx.dll_dlssnr.dll"
                     || lower == "nvngx_dlssnr.dll"
                     || lower == "rtxmfg-universal.json"
+                    || lower == "rtx40mfg-universal.json"
+                    || lower == "sl.pcl.dll"
                     || lower.starts_with("rtxmfg-")
                     || lower.ends_with(".addon64")
                     || lower.ends_with(".addon32")
@@ -550,8 +609,8 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
         if backup_file.exists() {
             // Safety check: if the backed-up file was actually a proxy hook or mod file
             // that was mistakenly copied to backup during a prior dirty install, NEVER restore it!
-            if is_proxy_hook(&backup_file) {
-                crate::core::logger::warn("restore", &format!("Skipping corrupted backup file (is proxy hook): {}", backup_file.display()));
+            if is_corrupted_or_mod_backup(&backup_file) {
+                crate::core::logger::warn("restore", &format!("Skipping corrupted backup file (is proxy hook or mod): {}", backup_file.display()));
                 if target_file.exists() {
                     let _ = fs::remove_file(&target_file);
                 }
@@ -582,6 +641,32 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
         }
     }
 
+    // Inspect all historical manifests and remove any file that was ever recorded in added
+    if let Ok(entries) = fs::read_dir(&bdir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if fname.starts_with("manifest.json.done-") {
+                if let Ok(content) = fs::read_to_string(entry.path()) {
+                    if let Ok(past_m) = serde_json::from_str::<ActiveManifest>(&content) {
+                        for rel in &past_m.added {
+                            let target_file = resolve_target_path(game_dir, rel);
+                            if target_file.exists() {
+                                let _ = fs::remove_file(&target_file);
+                                crate::core::logger::debug("restore", &format!("Removed historically added file: {}", target_file.display()));
+                            }
+                        }
+                        for rel in past_m.added_dirs.iter().rev() {
+                            let target_dir = resolve_target_path(game_dir, rel);
+                            if target_dir.exists() {
+                                let _ = fs::remove_dir_all(&target_dir);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Also purge known leftover injected mod files
     let exe_opt = manifest.game_exe.as_ref()
         .or_else(|| manifest.game.as_ref().and_then(|g| g.exe.as_ref()))
@@ -603,7 +688,7 @@ pub fn restore_game(game_dir: &Path) -> std::io::Result<bool> {
     Ok(true)
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct HistoryRow {
     pub date: String,
     pub dir: String,
@@ -614,43 +699,90 @@ pub struct HistoryRow {
     pub added: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HistoryFile {
+    pub version: String,
+    pub entries: Vec<HistoryRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum HistoryStorageFormat {
+    Versioned(HistoryFile),
+    Legacy(Vec<HistoryRow>),
+}
+
 pub fn history_path() -> PathBuf {
     crate::core::state::get_appdata_dir().join("history.json")
+}
+
+pub fn save_history_file(file: &HistoryFile) -> std::io::Result<()> {
+    let path = history_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec_pretty(file)?;
+    fs::write(path, bytes)?;
+    Ok(())
+}
+
+pub fn parse_history_bytes(bytes: &[u8], current_version: &str) -> (Vec<HistoryRow>, Option<HistoryFile>) {
+    if let Ok(format) = serde_json::from_slice::<HistoryStorageFormat>(bytes) {
+        match format {
+            HistoryStorageFormat::Versioned(file) => {
+                let filtered: Vec<HistoryRow> = file.entries.into_iter()
+                    .filter(|r| !r.dir.contains("dlss_test_") && !r.dir.contains("dlss_addon_test_"))
+                    .collect();
+                if file.version != current_version {
+                    crate::core::logger::info("journal", &format!("Migrating history.json from {} to {}", file.version, current_version));
+                    let upgraded = HistoryFile {
+                        version: current_version.to_string(),
+                        entries: filtered.clone(),
+                    };
+                    return (filtered, Some(upgraded));
+                }
+                return (filtered, None);
+            }
+            HistoryStorageFormat::Legacy(rows) => {
+                let filtered: Vec<HistoryRow> = rows.into_iter()
+                    .filter(|r| !r.dir.contains("dlss_test_") && !r.dir.contains("dlss_addon_test_"))
+                    .collect();
+                crate::core::logger::info("journal", &format!("Migrating legacy history.json to version {}", current_version));
+                let upgraded = HistoryFile {
+                    version: current_version.to_string(),
+                    entries: filtered.clone(),
+                };
+                return (filtered, Some(upgraded));
+            }
+        }
+    }
+    (Vec::new(), None)
 }
 
 pub fn read_history() -> Vec<HistoryRow> {
     let path = history_path();
     if let Ok(bytes) = fs::read(&path) {
-        let rows: Vec<HistoryRow> = serde_json::from_slice(&bytes).unwrap_or_default();
-        rows.into_iter()
-            .filter(|r| !r.dir.contains("dlss_test_") && !r.dir.contains("dlss_addon_test_"))
-            .collect()
-    } else {
-        Vec::new()
+        let (rows, migration) = parse_history_bytes(&bytes, env!("CARGO_PKG_VERSION"));
+        if let Some(upgraded) = migration {
+            let _ = save_history_file(&upgraded);
+        }
+        return rows;
     }
+    Vec::new()
 }
 
 pub fn append_history(row: &HistoryRow) -> std::io::Result<()> {
-    #[cfg(test)]
-    {
-        let _ = row;
+    if row.dir.contains("dlss_test_") || row.dir.contains("dlss_addon_test_") || row.dir.contains("test_") {
         return Ok(());
     }
-    #[cfg(not(test))]
-    {
-        if row.dir.contains("dlss_test_") || row.dir.contains("dlss_addon_test_") {
-            return Ok(());
-        }
-        let path = history_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let mut history = read_history();
-        history.push(row.clone());
-        let bytes = serde_json::to_vec_pretty(&history)?;
-        fs::write(path, bytes)?;
-        Ok(())
-    }
+    let mut history = read_history();
+    history.push(row.clone());
+    let file = HistoryFile {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        entries: history,
+    };
+    save_history_file(&file)?;
+    Ok(())
 }
 
 pub fn now_timestamp_str() -> String {
@@ -683,225 +815,6 @@ pub fn now_timestamp_str() -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_has_backup_available_and_read_done_manifest() {
-        let temp_dir = std::env::temp_dir().join(format!("dlss_journal_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
-        let bdir = temp_dir.join("_DLSS5_Backup");
-        fs::create_dir_all(&bdir).unwrap();
-
-        assert!(!has_backup_available(&temp_dir));
-        assert!(read_manifest(&temp_dir).is_none());
-
-        // Create an archived manifest
-        let manifest = ActiveManifest {
-            route: "optiscaler".to_string(),
-            ..Default::default()
-        };
-        let bytes = serde_json::to_vec(&manifest).unwrap();
-        fs::write(bdir.join("manifest.json.done-123456789"), &bytes).unwrap();
-
-        // Archived manifest represents a completed restore; should NOT trigger active backup or active manifest
-        assert!(!has_backup_available(&temp_dir), "Archived manifest must not trigger has_backup_available");
-        assert!(read_manifest(&temp_dir).is_none(), "read_manifest must not fall back to archived manifest");
-
-        // Can still be inspected via read_latest_done_manifest
-        let read = read_latest_done_manifest(&temp_dir);
-        assert!(read.is_some(), "read_latest_done_manifest should find archived manifest");
-        assert_eq!(read.unwrap().route, "optiscaler");
-
-        // When active manifest.json is present, both return true/Some
-        fs::write(bdir.join("manifest.json"), &bytes).unwrap();
-        assert!(has_backup_available(&temp_dir));
-        assert!(read_manifest(&temp_dir).is_some());
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_clean_untracked_mods() {
-        let temp_dir = std::env::temp_dir().join(format!("dlss_clean_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
-        fs::create_dir_all(&temp_dir).unwrap();
-
-        let opti_ini = temp_dir.join("OptiScaler.ini");
-        let reshade_dll = temp_dir.join("ReShade64.dll");
-        let addon = temp_dir.join("renodx-mfgunlock.addon64");
-        let safe_file = temp_dir.join("Game.exe");
-        let proxy_dxgi = temp_dir.join("dxgi.dll");
-
-        fs::write(&opti_ini, b"ini").unwrap();
-        fs::write(&reshade_dll, b"dll").unwrap();
-        fs::write(&addon, b"addon").unwrap();
-        fs::write(&safe_file, b"exe").unwrap();
-
-        let mut proxy_bytes = vec![0u8; 100_000];
-        proxy_bytes[50_000..50_010].copy_from_slice(b"OptiScaler");
-        fs::write(&proxy_dxgi, proxy_bytes).unwrap();
-
-        let removed = clean_untracked_mods(&temp_dir).unwrap();
-        assert_eq!(removed.len(), 4);
-        assert!(!opti_ini.exists());
-        assert!(!reshade_dll.exists());
-        assert!(!addon.exists());
-        assert!(!proxy_dxgi.exists(), "Proxy dxgi.dll must be removed");
-        assert!(safe_file.exists(), "Original game executable must not be deleted");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_clean_untracked_mods_nested_reshade() {
-        let temp_dir = std::env::temp_dir().join(format!("dlss_clean_nested_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
-        let nested_dir = temp_dir.join("bin").join("x64");
-        fs::create_dir_all(&nested_dir).unwrap();
-
-        let nested_exe = nested_dir.join("MockCyberpunk2077.exe");
-        let reshade_dxgi = nested_dir.join("dxgi.dll");
-        let renodx_addon = nested_dir.join("renodx-dlss5.addon64");
-        let mfg_addon = nested_dir.join("renodx-mfgunlock.addon64");
-        let reshade_ini = nested_dir.join("ReShade.ini");
-
-        fs::write(&nested_exe, b"MZ dummy exe").unwrap();
-        fs::write(&renodx_addon, b"addon").unwrap();
-        fs::write(&mfg_addon, b"mfg").unwrap();
-        fs::write(&reshade_ini, b"[INPUT]\nKeyOverlay=36").unwrap();
-
-        let mut reshade_bytes = vec![0u8; 100_000];
-        reshade_bytes[50_000..50_007].copy_from_slice(b"ReShade");
-        fs::write(&reshade_dxgi, reshade_bytes).unwrap();
-
-        let removed = clean_untracked_mods_with_exe(&temp_dir, Some(&nested_exe)).unwrap();
-        assert!(removed.contains(&"dxgi.dll".to_string()));
-        assert!(removed.contains(&"renodx-dlss5.addon64".to_string()));
-        assert!(removed.contains(&"renodx-mfgunlock.addon64".to_string()));
-        assert!(removed.contains(&"ReShade.ini".to_string()));
-
-        assert!(!reshade_dxgi.exists(), "Nested dxgi.dll must be cleaned");
-        assert!(!renodx_addon.exists(), "Nested renodx-dlss5.addon64 must be cleaned");
-        assert!(!mfg_addon.exists(), "Nested renodx-mfgunlock.addon64 must be cleaned");
-        assert!(!reshade_ini.exists(), "Nested ReShade.ini must be cleaned");
-        assert!(nested_exe.exists(), "Game executable must remain intact");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
 
 
-    #[test]
-    fn test_running_game_guard_prevents_clean_and_restore() {
-        let procs = crate::core::install_guards::get_running_processes();
-        if procs.is_empty() {
-            return;
-        }
-        let running_proc_name = &procs[0].name;
-
-        let temp_dir = std::env::temp_dir().join(format!("dlss_guard_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
-        fs::create_dir_all(&temp_dir).unwrap();
-
-        let running_dummy_exe = temp_dir.join(running_proc_name);
-        fs::write(&running_dummy_exe, b"MZ").unwrap();
-
-        // 1. clean_untracked_mods_with_exe must reject cleaning while target process is running
-        let clean_res = clean_untracked_mods_with_exe(&temp_dir, Some(&running_dummy_exe));
-        assert!(clean_res.is_err(), "Cleaning must be blocked when game process is active");
-        let err_str = clean_res.unwrap_err().to_string();
-        assert!(err_str.contains("Close the game"), "Error must tell user to close the game first: {}", err_str);
-
-        // 2. restore_game must also reject restoring while target process is running
-        let manifest = ActiveManifest {
-            game_exe: Some(running_proc_name.clone()),
-            ..Default::default()
-        };
-        let bdir = backup_dir(&temp_dir);
-        fs::create_dir_all(&bdir).unwrap();
-        fs::write(bdir.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
-
-        let restore_res = restore_game(&temp_dir);
-        assert!(restore_res.is_err(), "Restore must be blocked when game process is active");
-        let rest_err = restore_res.unwrap_err().to_string();
-        assert!(rest_err.contains("Close the game"), "Error must tell user to close the game first: {}", rest_err);
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_history_and_manifest_serialization() {
-        let temp = std::env::temp_dir().join(format!("test_journal_ser_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        fs::create_dir_all(&temp).unwrap();
-
-        // Manifest path
-        let m_path = backup_dir(&temp).join("manifest.json");
-        assert!(m_path.ends_with("manifest.json"));
-
-        // Read manifest on non-existent file
-        assert!(read_manifest(&temp).is_none());
-
-        // Read manifest with invalid JSON
-        fs::create_dir_all(backup_dir(&temp)).unwrap();
-        fs::write(&m_path, b"invalid-json").unwrap();
-        assert!(read_manifest(&temp).is_none());
-
-        let _ = fs::remove_dir_all(&temp);
-    }
-
-    #[test]
-    fn test_prune_old_manifests_keeps_last_5_and_cleans_orphaned_originals() {
-        let temp = std::env::temp_dir().join(format!("dlss_prune_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let bdir = temp.join("_DLSS5_Backup");
-        fs::create_dir_all(&bdir).unwrap();
-
-        // Create 8 archived done manifests (ts 100 to 800)
-        for i in 1..=8 {
-            let ts = 1000 + i * 100;
-            let prefix = format!("originals/{}", ts);
-            let orig_dir = bdir.join(&prefix);
-            fs::create_dir_all(&orig_dir).unwrap();
-            fs::write(orig_dir.join("dxgi.dll"), b"mock-orig").unwrap();
-
-            let manifest = ActiveManifest {
-                backup_prefix: Some(prefix),
-                ..Default::default()
-            };
-            let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
-            fs::write(bdir.join(format!("manifest.json.done-{}", ts)), bytes).unwrap();
-        }
-
-        // Active manifest references originals/1800
-        let active_manifest = ActiveManifest {
-            backup_prefix: Some("originals/1800".to_string()),
-            ..Default::default()
-        };
-        let active_bytes = serde_json::to_vec_pretty(&active_manifest).unwrap();
-        fs::write(bdir.join("manifest.json"), active_bytes).unwrap();
-
-        // Run pruner keeping top 5
-        let pruned = prune_old_manifests(&temp, 5);
-        assert_eq!(pruned, 3, "Must prune 3 older manifests out of 8");
-
-        // Verify remaining done manifests: 1800, 1700, 1600, 1500, 1400 should exist
-        assert!(bdir.join("manifest.json.done-1800").exists());
-        assert!(bdir.join("manifest.json.done-1700").exists());
-        assert!(bdir.join("manifest.json.done-1600").exists());
-        assert!(bdir.join("manifest.json.done-1500").exists());
-        assert!(bdir.join("manifest.json.done-1400").exists());
-
-        // 1300, 1200, 1100 must be deleted
-        assert!(!bdir.join("manifest.json.done-1300").exists());
-        assert!(!bdir.join("manifest.json.done-1200").exists());
-        assert!(!bdir.join("manifest.json.done-1100").exists());
-
-        // Verify orphaned originals/1300, 1200, 1100 were cleaned up
-        assert!(!bdir.join("originals/1300").exists());
-        assert!(!bdir.join("originals/1200").exists());
-        assert!(!bdir.join("originals/1100").exists());
-
-        // Retained originals/1400 to 1800 must still exist
-        assert!(bdir.join("originals/1400").exists());
-        assert!(bdir.join("originals/1800").exists());
-
-        let _ = fs::remove_dir_all(&temp);
-    }
-}
 

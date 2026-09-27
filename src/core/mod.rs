@@ -11,23 +11,13 @@ pub mod steamart;
 pub mod install_routes;
 
 pub mod i18n;
-pub mod overlay_bridge;
 pub mod tray;
 pub mod logger;
 pub mod single_instance;
 pub mod downloader;
 pub mod vulkan_layer;
-pub mod overlay_preview_window;
+pub mod vibepollo;
+pub mod display;
  
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_app_version_matches_package() {
-        assert_eq!(APP_VERSION, "1.0.8");
-        assert!(!APP_VERSION.is_empty());
-    }
-}

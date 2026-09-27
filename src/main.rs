@@ -5,11 +5,11 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-mod core;
-mod ui;
+use dlss_studio::{core, ui, big_picture};
 
 use dioxus::prelude::*;
 use dioxus::desktop::{Config, WindowBuilder, LogicalSize};
+use dioxus::desktop::tao::window::Fullscreen;
 use dioxus::desktop::tao::window::Icon as TaoIcon;
 
 fn main() {
@@ -21,8 +21,30 @@ fn main() {
     core::logger::info("app", &format!("Appdata directory: {}", core::state::get_appdata_dir().display()));
 
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--overlay-preview" || a == "--overlay-test") {
-        core::overlay_preview_window::run_overlay_preview_window();
+
+    // Early exit headless commands (executed by setup or automation scripts)
+    if args.iter().any(|a| a == "--enable-startup-only") {
+        core::logger::info("app", "Enabling Windows startup (headless) via --enable-startup-only");
+        let _ = core::tray::set_startup_enabled(true);
+        return;
+    }
+    if args.iter().any(|a| a == "--disable-startup-only") {
+        core::logger::info("app", "Disabling Windows startup (headless) via --disable-startup-only");
+        let _ = core::tray::set_startup_enabled(false);
+        return;
+    }
+    if args.iter().any(|a| a == "--enable-background-only") {
+        core::logger::info("app", "Setting run_in_background = true (headless)");
+        let mut s = core::state::load_state();
+        s.run_in_background = true;
+        let _ = core::state::save_state(&s);
+        return;
+    }
+    if args.iter().any(|a| a == "--disable-background-only") {
+        core::logger::info("app", "Setting run_in_background = false (headless)");
+        let mut s = core::state::load_state();
+        s.run_in_background = false;
+        let _ = core::state::save_state(&s);
         return;
     }
     if args.len() >= 3 && args[1] == "--restore" {
@@ -60,16 +82,6 @@ fn main() {
         return;
     }
 
-    if args.iter().any(|a| a == "--enable-startup-only") {
-        core::logger::info("app", "Enabling Windows startup (headless) via --enable-startup-only");
-        let _ = core::tray::set_startup_enabled(true);
-        return;
-    }
-    if args.iter().any(|a| a == "--disable-startup-only") {
-        core::logger::info("app", "Disabling Windows startup (headless) via --disable-startup-only");
-        let _ = core::tray::set_startup_enabled(false);
-        return;
-    }
     if args.iter().any(|a| a == "--enable-startup") {
         core::logger::info("app", "Enabling Windows startup via --enable-startup");
         let _ = core::tray::set_startup_enabled(true);
@@ -77,21 +89,6 @@ fn main() {
     if args.iter().any(|a| a == "--disable-startup") {
         core::logger::info("app", "Disabling Windows startup via --disable-startup");
         let _ = core::tray::set_startup_enabled(false);
-    }
-
-    if args.iter().any(|a| a == "--enable-background-only") {
-        core::logger::info("app", "Setting run_in_background = true (headless)");
-        let mut s = core::state::load_state();
-        s.run_in_background = true;
-        let _ = core::state::save_state(&s);
-        return;
-    }
-    if args.iter().any(|a| a == "--disable-background-only") {
-        core::logger::info("app", "Setting run_in_background = false (headless)");
-        let mut s = core::state::load_state();
-        s.run_in_background = false;
-        let _ = core::state::save_state(&s);
-        return;
     }
     if args.iter().any(|a| a == "--enable-background") {
         core::logger::info("app", "Setting run_in_background = true");
@@ -106,11 +103,24 @@ fn main() {
         let _ = core::state::save_state(&s);
     }
 
+    // Synchronize Vibepollo cover art in local user AppData (no elevation required)
+    if core::vibepollo::is_vibepollo_installed() {
+        let _ = core::vibepollo::ensure_vibepollo_cover_art();
+    }
+
+    let start_in_bp = big_picture::launch_args_request_big_picture(&args);
+
     // Single instance check: only ever allow one running instance
-    let _instance_guard = match core::single_instance::acquire_single_instance() {
+    let _instance_guard = match core::single_instance::acquire_single_instance(start_in_bp) {
         Some(guard) => guard,
         None => {
-            core::logger::info("app", "Another instance of DLSS 5 Studio is already running. Signaled existing instance and exiting.");
+            core::logger::info(
+                "app",
+                &format!(
+                    "Another instance of DLSS 5 Studio is already running. Signaled existing instance (big_picture: {}) and exiting.",
+                    start_in_bp
+                ),
+            );
             return;
         }
     };
@@ -125,10 +135,11 @@ fn main() {
     let css_overlay_ctrl = include_str!("../assets/overlay-controls.css");
 
     let initial_state = core::state::load_state();
+    let _ = core::journal::read_history();
     let initial_theme = initial_state.theme;
     let theme_val = if initial_theme == "light" { "light" } else { "dark" };
     let rust_theme_val = if initial_state.rust_theme { "true" } else { "false" };
-    core::logger::info("app", &format!("Initial theme: {}, rust_theme: {}", theme_val, rust_theme_val));
+    core::logger::info("app", &format!("Initial theme: {}, rust_theme: {}, version: {:?}", theme_val, rust_theme_val, initial_state.version));
 
     let head = format!(
         r#"<meta charset="utf-8" />
@@ -183,12 +194,30 @@ fn main() {
 
     let icon = TaoIcon::from_rgba(include_bytes!("../assets/icon_64.rgba").to_vec(), 64, 64).ok();
 
+    use dioxus::desktop::tao::platform::windows::WindowBuilderExtWindows;
     let mut window = WindowBuilder::new()
         .with_title("DLSS 5 Studio")
         .with_decorations(false)
+        .with_resizable(true)
+        .with_undecorated_shadow(true)
         .with_visible(!start_in_bg)
         .with_inner_size(LogicalSize::new(1280.0, 900.0))
         .with_min_inner_size(LogicalSize::new(960.0, 640.0));
+
+    if start_in_bp {
+        if let Some(target) = core::display::find_streaming_display() {
+            core::logger::info(
+                "app",
+                &format!(
+                    "Configuring Big Picture window on target monitor: {} ({}x{} at {},{})",
+                    target.description, target.width, target.height, target.left, target.top
+                ),
+            );
+            window = window
+                .with_position(dioxus::desktop::tao::dpi::PhysicalPosition::new(target.left, target.top));
+        }
+        window = window.with_fullscreen(Some(Fullscreen::Borderless(None)));
+    }
 
     if let Some(ic) = icon {
         window = window.with_window_icon(Some(ic));
@@ -203,6 +232,7 @@ fn main() {
     }
 
     let cfg = Config::new()
+        .with_background_color((8, 10, 14, 255))
         .with_data_directory(webview_data_dir)
         .with_window(window)
         .with_custom_head(head)

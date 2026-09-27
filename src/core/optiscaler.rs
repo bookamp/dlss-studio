@@ -303,6 +303,37 @@ pub fn find_renodx_payload() -> Option<PathBuf> {
     None
 }
 
+/// Locates NIGos's DLSS 5 D3D12 Mip Chain Companion addon
+pub fn find_dlss5_d3d12_fix_payload() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    for root in get_component_roots() {
+        candidates.push(root.join("dlss-mip-fix").join("dlss-mip-fix.addon64"));
+        candidates.push(root.join("dlss-mip-fix.addon64"));
+        candidates.push(root.join("addons").join("dlss-mip-fix.addon64"));
+        candidates.push(root.join("dlss5-d3d12-fix").join("dlss5-d3d12-fix.addon64"));
+        candidates.push(root.join("dlss5-d3d12-fix.addon64"));
+        candidates.push(root.join("addons").join("dlss5-d3d12-fix.addon64"));
+    }
+    if let Some(exe) = app_exe_dir() {
+        candidates.push(exe.join("components").join("dlss-mip-fix").join("dlss-mip-fix.addon64"));
+        candidates.push(exe.join("payload").join("dlss-mip-fix.addon64"));
+        candidates.push(exe.join("addons").join("dlss-mip-fix.addon64"));
+        candidates.push(exe.join("components").join("dlss5-d3d12-fix").join("dlss5-d3d12-fix.addon64"));
+        candidates.push(exe.join("payload").join("dlss5-d3d12-fix.addon64"));
+        candidates.push(exe.join("addons").join("dlss5-d3d12-fix.addon64"));
+    }
+    candidates.push(PathBuf::from("target/release/dlss_mip_addon.dll"));
+    candidates.push(PathBuf::from("target/release/dlss-mip-fix.addon64"));
+    candidates.push(PathBuf::from("dist/dlss-mip-fix.addon64"));
+
+    for c in candidates {
+        if c.is_file() {
+            return Some(c);
+        }
+    }
+    None
+}
+
 /// Locates the modern Streamline nvngx_dlss.dll runtime (v3.7+/v3.10+)
 pub fn find_dlss_payload() -> Option<PathBuf> {
     let mut candidates = Vec::new();
@@ -456,6 +487,7 @@ pub struct PayloadBundle {
     pub reshade64_dll: Option<PathBuf>,
     pub reshade32_dll: Option<PathBuf>,
     pub renodx_dlss5_addon: Option<PathBuf>,
+    pub dlss5_d3d12_fix_addon: Option<PathBuf>,
     pub renodx_mfgunlock_addon: Option<PathBuf>,
     pub streamline_dir: Option<PathBuf>,
     pub feeder_components: Option<crate::core::downloader::FeederComponents>,
@@ -480,6 +512,7 @@ impl PayloadBundle {
         let reshade64_dll = find_reshade64_payload();
         let reshade32_dll = find_reshade32_payload();
         let renodx_dlss5_addon = find_renodx_payload();
+        let dlss5_d3d12_fix_addon = find_dlss5_d3d12_fix_payload();
         let renodx_mfgunlock_addon = find_mfg_addon_payload();
         let streamline_dir = find_streamline_payload();
         let feeder_components = crate::core::downloader::find_local_feeder_components();
@@ -496,23 +529,13 @@ impl PayloadBundle {
             reshade64_dll,
             reshade32_dll,
             renodx_dlss5_addon,
+            dlss5_d3d12_fix_addon,
             renodx_mfgunlock_addon,
             streamline_dir,
             feeder_components,
             dgvoodoo,
         })
     }
-}
-
-/// Embedded ReShade Companion In-Game Overlay Add-on (dlss5-lab-overlay.addon64)
-/// Deflated at build-time to save ~540 KB from the binary; unpacked on demand to AppData components.
-pub const EMBEDDED_OVERLAY_ADDON_DEFLATED: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/dlss5-lab-overlay.addon64.deflate"));
-pub const EXPECTED_OVERLAY_ADDON_LEN: u64 = 868_352;
-
-pub fn decompress_embedded_overlay_addon() -> Vec<u8> {
-    miniz_oxide::inflate::decompress_to_vec(EMBEDDED_OVERLAY_ADDON_DEFLATED)
-        .expect("Failed to decompress embedded dlss5-lab-overlay.addon64")
 }
 
 /// Verifies that a discovered overlay add-on binary is a valid 64-bit ReShade addon payload
@@ -528,41 +551,40 @@ fn is_native_overlay_addon(path: &Path) -> bool {
     metadata.len() >= 50_000
 }
 
-/// Locates or materializes the DLSS 5 Studio In-Game Overlay addon (dlss5-lab-overlay.addon64)
+/// Locates the DLSS Studio In-Game Overlay addon on disk if present
 pub fn find_overlay_addon_payload() -> Option<PathBuf> {
-    // 1. First priority: ensure AppData components contains a fresh, verified copy of the overlay addon
-    let appdata_comp = crate::core::state::get_appdata_dir().join("components");
-    let target = appdata_comp.join("dlss5-lab-overlay.addon64");
-    let target_needs_write = match fs::metadata(&target) {
-        Ok(meta) => meta.len() != EXPECTED_OVERLAY_ADDON_LEN,
-        Err(_) => true,
-    };
-    if target_needs_write {
-        let _ = fs::create_dir_all(&appdata_comp);
-        let decompressed = decompress_embedded_overlay_addon();
-        let _ = fs::write(&target, &decompressed);
-    }
-
     let mut candidates = Vec::new();
 
-    // 2. Verified AppData target
-    candidates.push(target);
+    // 1. AppData components
+    let appdata_comp = crate::core::state::get_appdata_dir().join("components");
+    candidates.push(appdata_comp.join("dlss-overlay.addon64"));
+    candidates.push(appdata_comp.join("dlss5-lab-overlay.addon64"));
 
-    // 3. Workspace assets and build outputs
+    // 2. Workspace assets and build outputs
+    candidates.push(PathBuf::from(r"assets\dlss-overlay.addon64"));
     candidates.push(PathBuf::from(r"assets\dlss5-lab-overlay.addon64"));
+    candidates.push(PathBuf::from(r"target\release\dlss_overlay.dll"));
+    candidates.push(PathBuf::from(r"target\release\dlss-overlay.addon64"));
     candidates.push(PathBuf::from(r"target\release\dlss5_lab_overlay.dll"));
     candidates.push(PathBuf::from(r"target\release\dlss5-lab-overlay.addon64"));
+    candidates.push(PathBuf::from(r"target\debug\dlss_overlay.dll"));
+    candidates.push(PathBuf::from(r"target\debug\dlss-overlay.addon64"));
     candidates.push(PathBuf::from(r"target\debug\dlss5_lab_overlay.dll"));
     candidates.push(PathBuf::from(r"target\debug\dlss5-lab-overlay.addon64"));
 
-    // 4. Component roots and app executable dir
+    // 3. Component roots and app executable dir
     for root in get_component_roots() {
+        candidates.push(root.join("dlss-overlay.addon64"));
         candidates.push(root.join("dlss5-lab-overlay.addon64"));
+        candidates.push(root.join("overlay").join("dlss-overlay.addon64"));
         candidates.push(root.join("overlay").join("dlss5-lab-overlay.addon64"));
     }
     if let Some(exe) = app_exe_dir() {
+        candidates.push(exe.join("dlss-overlay.addon64"));
         candidates.push(exe.join("dlss5-lab-overlay.addon64"));
+        candidates.push(exe.join("components").join("dlss-overlay.addon64"));
         candidates.push(exe.join("components").join("dlss5-lab-overlay.addon64"));
+        candidates.push(exe.join("overlay").join("dlss-overlay.addon64"));
         candidates.push(exe.join("overlay").join("dlss5-lab-overlay.addon64"));
     }
 
@@ -615,7 +637,8 @@ pub struct DeployResult {
     pub added: usize,
 }
 
-fn is_known_mod_file(dest: &Path) -> bool {
+#[doc(hidden)]
+pub fn is_known_mod_file(dest: &Path) -> bool {
     let name = dest.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
     if name == "optiscaler.ini"
         || name == "optiscaler.log"
@@ -634,13 +657,21 @@ fn is_known_mod_file(dest: &Path) -> bool {
         || name == "dlss5-feed.addon64"
         || name == "dlss5-feed.addon32"
         || name == "dlss5-feed-host64.exe"
+        || name == "dlss-overlay.addon64"
         || name == "dlss5-lab-overlay.addon64"
         || name == "renodx-dlss5.addon64"
+        || name == "dlss-mip-fix.addon64"
+        || name == "dlss-mip-fix.cfg"
+        || name == "dlss-mip-fix.log"
+        || name == "dlss5-d3d12-fix.addon64"
+        || name == "dlss5-d3d12-fix.cfg"
+        || name == "dlss5-d3d12-fix.log"
         || name == "renodx-mfgunlock.addon64"
         || name == "dgvoodoo.conf"
         || name == "dgvoodoo.log"
         || name == "rtxmfg-universal.json"
         || name == "rtx40mfg-universal.json"
+        || name == "sl.pcl.dll"
         || name.starts_with("rtxmfg-")
         || name.ends_with(".addon64")
         || name.ends_with(".addon32")
@@ -783,8 +814,15 @@ pub fn clean_conflicting_route_artifacts(
                             || lower == "dlss5-feed.addon64"
                             || lower == "dlss5-feed.addon32"
                             || lower == "dlss5-feed-host64.exe"
+                            || lower == "dlss-overlay.addon64"
                             || lower == "dlss5-lab-overlay.addon64"
                             || lower == "renodx-dlss5.addon64"
+                            || lower == "dlss-mip-fix.addon64"
+                            || lower == "dlss-mip-fix.cfg"
+                            || lower == "dlss-mip-fix.log"
+                            || lower == "dlss5-d3d12-fix.addon64"
+                            || lower == "dlss5-d3d12-fix.cfg"
+                            || lower == "dlss5-d3d12-fix.log"
                             || lower == "renodx-mfgunlock.addon64"
                             || lower == "dgvoodoo.conf"
                             || lower == "dgvoodoo.log"
@@ -886,6 +924,7 @@ pub fn clean_conflicting_route_artifacts(
                     let _ = fs::remove_dir_all(&host64_dir);
                 }
             } else if target_route == "feeder" {
+                let _ = fs::remove_file(dir.join("dlss-overlay.addon64"));
                 let _ = fs::remove_file(dir.join("dlss5-lab-overlay.addon64"));
             }
         }
@@ -922,7 +961,7 @@ fn carry_forward_existing_backups(
             } else {
                 prev_bdir.join(&item.rel)
             };
-            if old_backup_file.is_file() && !crate::core::journal::is_proxy_hook(&old_backup_file) {
+            if old_backup_file.is_file() && !crate::core::journal::is_corrupted_or_mod_backup(&old_backup_file) {
                 let new_backup_file = backup_dir.join(&item.rel);
                 if let Some(parent) = new_backup_file.parent() {
                     let _ = fs::create_dir_all(parent);
@@ -962,7 +1001,23 @@ fn track_and_copy(
         .unwrap_or_else(|_| dest.file_name().unwrap_or_default().to_string_lossy().to_string());
 
     if dest.exists() {
-        if is_known_mod_file(dest) {
+        let is_same_as_src = if let (Ok(d_meta), Ok(s_meta)) = (dest.metadata(), src.metadata()) {
+            if d_meta.len() == s_meta.len() {
+                fs::read(dest).ok() == fs::read(src).ok()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        let was_previously_added = if let Some(prev) = crate::core::journal::read_manifest(game_dir) {
+            prev.added.contains(&rel)
+        } else {
+            false
+        };
+
+        if is_known_mod_file(dest) || is_same_as_src || was_previously_added {
             if !manifest.added.contains(&rel) && !manifest.replaced.iter().any(|r| r.rel == rel) {
                 manifest.added.push(rel.clone());
             }
@@ -1178,10 +1233,21 @@ pub fn deploy_optiscaler_with_bundle(opts: &DeployOptions, payloads: &PayloadBun
         }
     }
 
-    // 6. Deploy verified Streamline 2.14.1 stack if game has Streamline
-    // Unifies local Streamline with driver OTA to permanently eliminate the 0xC0000005 crash in sl.reflex (190_E658703.dll)
-    if mod_root.join("sl.interposer.dll").exists() {
-        if let Some(streamline_src) = &payloads.streamline_dir {
+    // 6. Deploy verified Streamline 2.14.1 stack if game has Streamline 2.x
+    // Unifies local Streamline with driver OTA to permanently eliminate the 0xC0000005 crash in sl.reflex (190_E658703.dll).
+    // Legacy Streamline 1.x titles (e.g. A Plague Tale: Requiem) are strictly preserved to prevent export mismatch crashes.
+    let existing_sl = [
+        backup_dir.join("sl.interposer.dll"),
+        mod_root.join("sl.interposer.dll"),
+        opts.game_dir.join("sl.interposer.dll"),
+    ]
+    .into_iter()
+    .find(|p| p.is_file());
+
+    if let Some(target_sl) = existing_sl {
+        if crate::core::pe::is_legacy_streamline_1x(&target_sl) {
+            log.push("[STREAMLINE] Legacy Streamline 1.x detected (exports slGetFeatureSettings) - preserving original game Streamline files to prevent 0xC0000005 export mismatch".to_string());
+        } else if let Some(streamline_src) = &payloads.streamline_dir {
             if streamline_src.is_dir() {
                 let sl_files = [
                     "sl.interposer.dll",
@@ -1331,6 +1397,17 @@ pub fn deploy_native_dlss5_with_bundle(opts: &DeployOptions, payloads: &PayloadB
             }
         }
 
+        // Deploy DLSS Studio D3D12 Mip Fix companion addon
+        if let Some(fix_src) = &payloads.dlss5_d3d12_fix_addon {
+            if fix_src.is_file() {
+                let dest = mod_root.join("dlss-mip-fix.addon64");
+                track_and_copy(&mut manifest, &opts.game_dir, &backup_dir, fix_src, &dest, "addon", &mut log)
+                    .map_err(|e| format!("Failed to copy dlss-mip-fix.addon64: {}", e))?;
+                deployed_addon_stems.push("dlss-mip-fix".to_string());
+                log.push("[ADDON] dlss-mip-fix.addon64 deployed (Pure Rust D3D12 Mip Companion)".to_string());
+            }
+        }
+
         // Deploy nvngx_dlssnr.dll required by RenoDX DLSS 5 Neural Rendering engine
         if let Some(dlssnr_src) = &payloads.nvngx_dlssnr_dll {
             if dlssnr_src.is_file() {
@@ -1352,6 +1429,22 @@ pub fn deploy_native_dlss5_with_bundle(opts: &DeployOptions, payloads: &PayloadB
                     .map_err(|e| format!("Failed to copy renodx-mfgunlock.addon64: {}", e))?;
                 deployed_addon_stems.push("renodx-mfgunlock".to_string());
                 log.push("[MFG] renodx-mfgunlock.addon64 deployed (ReShade 4x MFG Unlock)".to_string());
+            }
+        }
+
+        // Deploy modern nvngx_dlssg.dll (310.8.0.0) required by renodx-mfgunlock.addon64 for Ada arch-gate detection
+        let has_native_dlssg = mod_root.join("nvngx_dlssg.dll").is_file()
+            || opts.game_dir.join("nvngx_dlssg.dll").is_file();
+
+        if has_native_dlssg {
+            if let Some(streamline_src) = &payloads.streamline_dir {
+                let modern_dlssg = streamline_src.join("nvngx_dlssg.dll");
+                if modern_dlssg.is_file() {
+                    let dest = mod_root.join("nvngx_dlssg.dll");
+                    track_and_copy(&mut manifest, &opts.game_dir, &backup_dir, &modern_dlssg, &dest, "runtime", &mut log)
+                        .map_err(|e| format!("Failed to upgrade nvngx_dlssg.dll for MFG Unlock: {}", e))?;
+                    log.push("[MFG] Upgraded nvngx_dlssg.dll to 310.8.0 for RenoDX Multi-Frame Generation Unlock".to_string());
+                }
             }
         }
     }
@@ -1383,6 +1476,11 @@ pub fn deploy_native_dlss5_with_bundle(opts: &DeployOptions, payloads: &PayloadB
     };
     configured_reshade_ini = set_ini(&configured_reshade_ini, "INPUT", "KeyOverlay", "36,0,0,0");
     configured_reshade_ini = set_ini(&configured_reshade_ini, "OVERLAY", "TutorialProgress", "4");
+
+    // AGENTS.md Line 15: EnableHooks=2 is NGX-only and must be used where native NGX D3D12 creates are active.
+    configured_reshade_ini = set_ini(&configured_reshade_ini, "RenoDX.DLSS5", "EnableHooks", "2");
+    configured_reshade_ini = set_ini(&configured_reshade_ini, "RenoDX.DLSS5", "NeuralUplift", "1");
+    configured_reshade_ini = set_ini(&configured_reshade_ini, "RenoDX.DLSS5", "NRAutoMask", "1");
     configured_reshade_ini = set_ini(&configured_reshade_ini, "RenoDX.DLSS5", "NRStyle", &opts.nr_style.to_string());
 
     if let Some(disabled) = get_ini(&configured_reshade_ini, "ADDON", "DisabledAddons") {
@@ -1666,9 +1764,9 @@ pub fn deploy_feeder_with_bundle(opts: &DeployOptions, payloads: &PayloadBundle)
     let bitness = crate::core::pe::inspect_pe(&opts.exe_path).map(|p| p.bitness).unwrap_or(64);
 
     let api_lower = opts.api.to_lowercase();
-    let is_dx11 = api_lower.contains("11") || api_lower == "d3d11";
-    let is_vulkan = api_lower.contains("vulkan");
     let is_dx12 = api_lower.contains("12") || api_lower.contains("d3d12") || api_lower.contains("dxgi");
+    let is_vulkan = api_lower.contains("vulkan");
+    let is_dx11 = (api_lower.contains("11") || api_lower == "d3d11") && !is_dx12;
     let has_native_dlssg = mod_root.join("nvngx_dlssg.dll").is_file()
         || mod_root.join("sl.dlss_g.dll").is_file()
         || opts.game_dir.join("nvngx_dlssg.dll").is_file();
@@ -1889,6 +1987,16 @@ pub fn deploy_feeder_with_bundle(opts: &DeployOptions, payloads: &PayloadBundle)
             }
         }
 
+        if let Some(fix_src) = &payloads.dlss5_d3d12_fix_addon {
+            if fix_src.is_file() {
+                let dest = mod_root.join("dlss-mip-fix.addon64");
+                track_and_copy(&mut manifest, &opts.game_dir, &backup_dir, fix_src, &dest, "addon", &mut log)
+                    .map_err(|e| format!("Failed to copy dlss-mip-fix.addon64: {}", e))?;
+                deployed_addon_stems.push("dlss-mip-fix".to_string());
+                log.push("[FEEDER-DLSS5] dlss-mip-fix.addon64 deployed (Pure Rust D3D12 Mip Companion)".to_string());
+            }
+        }
+
         if let Some(dlssnr_src) = &payloads.nvngx_dlssnr_dll {
             if dlssnr_src.is_file() {
                 track_and_copy(&mut manifest, &opts.game_dir, &backup_dir, dlssnr_src, &mod_root.join("nvngx_dlssnr.dll"), "runtime", &mut log)
@@ -1955,6 +2063,13 @@ pub fn deploy_feeder_with_bundle(opts: &DeployOptions, payloads: &PayloadBundle)
                                 let dest_renodx = host64_dir.join("renodx-dlss5.addon64");
                                 track_and_copy(&mut manifest, &opts.game_dir, &backup_dir, renodx, &dest_renodx, "feeder-host-addon", &mut log)
                                     .map_err(|e| format!("Failed to copy renodx-dlss5.addon64 to host64: {}", e))?;
+                            }
+                        }
+                        if let Some(fix) = &payloads.dlss5_d3d12_fix_addon {
+                            if fix.is_file() {
+                                let dest_fix = host64_dir.join("dlss-mip-fix.addon64");
+                                track_and_copy(&mut manifest, &opts.game_dir, &backup_dir, fix, &dest_fix, "feeder-host-addon", &mut log)
+                                    .map_err(|e| format!("Failed to copy dlss-mip-fix.addon64 to host64: {}", e))?;
                             }
                         }
                         if let Some(dlssnr) = &payloads.nvngx_dlssnr_dll {
@@ -2132,1892 +2247,3 @@ pub fn deploy_feeder(opts: &DeployOptions) -> Result<DeployResult, String> {
 
     deploy_feeder_with_bundle(opts, &payloads)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    pub use crate::core::state::STATE_TEST_MUTEX;
-
-    #[test]
-    fn test_set_ini() {
-        let base = "[DlssNr]\nRunBeforeSR=false\nPasses=1\n";
-        let updated = set_ini(base, "DlssNr", "RunBeforeSR", "true");
-        assert!(updated.contains("RunBeforeSR=true"));
-        let updated2 = set_ini(&updated, "DlssNr", "Passes", "3");
-        assert!(updated2.contains("Passes=3"));
-    }
-
-    #[test]
-    fn test_configure_dgvoodoo_conf_sets_display_duration_and_preserves_sections() {
-        let sample = r#"[General]
-OutputAPI = bestavailable
-DisableAndPassThru=false
-
-[GeneralExt]
-WatermarkDisplayDuration = 0
-
-[Glide]
-3DfxWatermark = false
-3DfxSplashScreen = true
-
-[DirectX]
-DisableAndPassThru = false
-dgVoodooWatermark = false
-"#;
-        let configured = configure_dgvoodoo_conf(sample);
-        assert!(configured.contains("WatermarkDisplayDuration = 3"), "Must set WatermarkDisplayDuration to 3");
-        assert!(configured.contains("dgVoodooWatermark = true"), "Must enable dgVoodooWatermark for temporary 3s confirmation");
-        assert!(configured.contains("3DfxWatermark = true"), "Must enable 3DfxWatermark for temporary 3s confirmation");
-        assert!(configured.contains("3DfxSplashScreen = false"), "Must disable 3DfxSplashScreen intro animation");
-        assert!(configured.contains("VRAM = 2048") || configured.contains("VRAM=2048"), "Must configure VRAM to 2048MB for high resolutions");
-        assert!(!configured.contains("[General]\r\nOutputAPI = bestavailable\r\nDisableAndPassThru=false"), "Must strip invalid DisableAndPassThru from [General]");
-    }
-
-    #[test]
-    fn test_find_overlay_addon_payload() {
-        let p = find_overlay_addon_payload();
-        assert!(p.is_some(), "In-game overlay addon payload must always be discoverable or materialized");
-        let path = p.unwrap();
-        assert!(path.exists(), "Materialized overlay addon must exist on disk");
-
-        // Verify it is a valid 64-bit ReShade addon payload ready for deployment
-        let metadata = fs::metadata(&path).expect("metadata must be readable");
-        assert!(
-            metadata.len() >= 50_000,
-            "Overlay addon must be valid 64-bit payload, found size: {}",
-            metadata.len()
-        );
-    }
-
-
-    #[test]
-    fn test_find_payloads() {
-        if find_optiscaler_payload().is_none() {
-            println!("OptiScaler payload not installed on this runner; skipping payload discovery test.");
-            return;
-        }
-        assert!(find_optiscaler_payload().is_some(), "OptiScaler payload should be found");
-        assert!(find_reshade64_payload().is_some(), "ReShade64 payload should be found");
-        assert!(find_mfg_addon_payload().is_some(), "MFG addon payload should be found");
-        assert!(find_dlssnr_payload().is_some(), "DLSS-NR payload should be found");
-        assert!(find_standalone_mfg_payload().is_some(), "Standalone RTXMFG payload should be found");
-    }
-    #[test]
-    fn test_deploy_and_restore() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        if find_optiscaler_payload().is_none() {
-            println!("OptiScaler payload not installed on this runner; skipping deploy and restore test.");
-            return;
-        }
-        let temp_dir = std::env::temp_dir().join(format!("dlss_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
-        let content_dir = temp_dir.join("Content");
-        fs::create_dir_all(&content_dir).unwrap();
-
-        let orig_dxgi = content_dir.join("dxgi.dll");
-        fs::write(&orig_dxgi, b"ORIGINAL_DXGI").unwrap();
-
-        let exe_path = content_dir.join("Resonance.exe");
-        fs::write(&exe_path, b"DUMMY_EXE").unwrap();
-
-        let opts = DeployOptions {
-            game_name: Some("Test Game".to_string()),
-            game_dir: content_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "dxgi".to_string(),
-            pre_sr: true,
-            passes: 2,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_optiscaler(&opts).expect("deploy should succeed");
-        assert!(res.success);
-        assert_eq!(res.replaced, 1);
-        assert!(res.added >= 2);
-
-        // Verify deployed files
-        assert!(orig_dxgi.exists());
-        assert_ne!(fs::read(&orig_dxgi).unwrap(), b"ORIGINAL_DXGI");
-
-        let opti_ini = fs::read_to_string(content_dir.join("OptiScaler.ini")).unwrap();
-        assert!(opti_ini.contains("RunBeforeSR=true"));
-        assert!(opti_ini.contains("Passes=2"));
-        assert!(opti_ini.contains("LoadReshade=false"));
-        assert!(opti_ini.contains("TargetProcessName=Resonance.exe"));
-
-        // Standalone MFG as version.dll
-        assert!(content_dir.join("version.dll").exists());
-        // Pure OptiScaler - zero ReShade files
-        assert!(!content_dir.join("ReShade64.dll").exists());
-        assert!(!content_dir.join("renodx-mfgunlock.addon64").exists());
-        assert!(content_dir.join("_DLSS5_Backup").join("manifest.json").exists());
-
-        // Now test restore
-        let rest = crate::core::journal::restore_game(&content_dir).expect("restore should succeed");
-        assert!(rest);
-
-        // Verify clean state
-        assert_eq!(fs::read(&orig_dxgi).unwrap(), b"ORIGINAL_DXGI");
-        assert!(!content_dir.join("version.dll").exists());
-        assert!(!content_dir.join("ReShade64.dll").exists());
-        assert!(!content_dir.join("renodx-mfgunlock.addon64").exists());
-        assert!(!content_dir.join("_DLSS5_Backup").join("manifest.json").exists());
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_addon_state_helpers() {
-        use crate::core::state::*;
-        let mut state = AppState::default();
-        assert!(is_addon_active(&state, "builtin:renodx"));
-        assert!(is_addon_active(&state, "builtin:mfgunlock"));
-        assert!(is_addon_active(&state, "builtin:feeder"));
-        assert!(!is_addon_active(&state, "builtin:overlay"));
-
-        // Mandatory base add-ons cannot be deactivated
-        toggle_addon_in_state(&mut state, "builtin:renodx", false);
-        assert!(is_addon_active(&state, "builtin:renodx"), "Base add-ons are mandatory");
-
-        let custom = AddonFileEntry {
-            path: "C:\\mods\\my_addon.addon64".to_string(),
-            name: Some("My Custom Addon".to_string()),
-            tag: Some("HDR".to_string()),
-            description: Some("Custom HDR grading".to_string()),
-        };
-        add_custom_addon(&mut state, custom);
-        assert_eq!(state.addon_files.len(), 1);
-        assert!(is_addon_active(&state, "C:\\mods\\my_addon.addon64"));
-
-        toggle_addon_in_state(&mut state, "C:\\mods\\my_addon.addon64", false);
-        assert!(!is_addon_active(&state, "C:\\mods\\my_addon.addon64"));
-        toggle_addon_in_state(&mut state, "C:\\mods\\my_addon.addon64", true);
-        assert!(is_addon_active(&state, "C:\\mods\\my_addon.addon64"));
-
-        remove_custom_addon(&mut state, "C:\\mods\\my_addon.addon64");
-        assert_eq!(state.addon_files.len(), 0);
-        assert!(!is_addon_active(&state, "C:\\mods\\my_addon.addon64"));
-    }
-
-    #[test]
-    fn test_find_renodx_payload() {
-        if find_renodx_payload().is_none() {
-            println!("RenoDX payload not installed on this runner; skipping test.");
-            return;
-        }
-        assert!(find_renodx_payload().is_some(), "RenoDX v4.7 payload should be found");
-    }
-
-    #[test]
-    fn test_deploy_respects_addon_toggles() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        if find_optiscaler_payload().is_none() || find_renodx_payload().is_none() {
-            println!("OptiScaler or RenoDX payload not installed on this runner; skipping addon toggle test.");
-            return;
-        }
-        let temp_dir = std::env::temp_dir().join(format!("dlss_addon_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
-        let content_dir = temp_dir.join("Content");
-        fs::create_dir_all(&content_dir).unwrap();
-
-        let orig_dxgi = content_dir.join("dxgi.dll");
-        fs::write(&orig_dxgi, b"ORIGINAL_DXGI").unwrap();
-
-        let exe_path = content_dir.join("Game.exe");
-        fs::write(&exe_path, b"DUMMY_EXE").unwrap();
-
-        // Create a custom addon payload file to test custom addon toggles
-        let custom_addon_file = temp_dir.join("test_custom.addon64");
-        fs::write(&custom_addon_file, b"CUSTOM_ADDON_PAYLOAD").unwrap();
-
-        let opts = DeployOptions {
-            game_name: Some("Addon Test Game".to_string()),
-            game_dir: content_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "dxgi".to_string(),
-            pre_sr: true,
-            passes: 1,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        // 1. Deploy with custom addon registered and enabled
-        let mut state = crate::core::state::load_state();
-        let custom_entry = crate::core::state::AddonFileEntry {
-            path: custom_addon_file.to_string_lossy().to_string(),
-            name: Some("Test Custom".to_string()),
-            tag: Some("Test".to_string()),
-            description: None,
-        };
-        crate::core::state::add_custom_addon(&mut state, custom_entry);
-        let _ = crate::core::state::save_state(&state);
-
-        let res = deploy_native_dlss5(&opts).expect("deploy should succeed");
-        assert!(res.success);
-        // Base add-on is mandatory and always deployed
-        assert!(content_dir.join("renodx-dlss5.addon64").exists(), "renodx-dlss5.addon64 should be deployed as mandatory base");
-        // Enabled custom addon is deployed
-        assert!(content_dir.join("test_custom.addon64").exists(), "custom addon should be deployed when active");
-
-        // Restore
-        let rest_res = crate::core::journal::restore_game(&content_dir).expect("restore should succeed");
-        assert!(rest_res);
-        assert!(!content_dir.join("renodx-dlss5.addon64").exists(), "renodx-dlss5.addon64 should be deleted on restore");
-        assert!(!content_dir.join("test_custom.addon64").exists(), "custom addon should be deleted on restore");
-
-        // 2. Deploy with custom addon deactivated
-        crate::core::state::toggle_addon_in_state(&mut state, &custom_addon_file.to_string_lossy(), false);
-        let _ = crate::core::state::save_state(&state);
-
-        let res2 = deploy_native_dlss5(&opts).expect("deploy should succeed");
-        assert!(res2.success);
-        assert!(content_dir.join("renodx-dlss5.addon64").exists(), "mandatory base addon is still deployed");
-        assert!(!content_dir.join("test_custom.addon64").exists(), "custom addon should NOT be deployed when deactivated");
-
-        // Clean up custom addon from state
-        crate::core::state::remove_custom_addon(&mut state, &custom_addon_file.to_string_lossy());
-        let _ = crate::core::state::save_state(&state);
-    }
-
-    #[test]
-    fn test_native_dlss5_nested_deploy_and_clean_lifecycle() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        if find_optiscaler_payload().is_none() || find_renodx_payload().is_none() {
-            println!("OptiScaler or RenoDX payload not installed on this runner; skipping test.");
-            return;
-        }
-        let orig_state = crate::core::state::load_state();
-        let mut state = orig_state.clone();
-        if !state.addons.iter().any(|a| a == "builtin:mfgunlock") {
-            state.addons.push("builtin:mfgunlock".to_string());
-        }
-        if !state.addons.iter().any(|a| a == "builtin:renodx") {
-            state.addons.push("builtin:renodx".to_string());
-        }
-        let _ = crate::core::state::save_state(&state);
-
-        let temp_dir = std::env::temp_dir().join(format!("dlss_nested_lifecycle_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
-        let bin_dir = temp_dir.join("bin").join("x64");
-        fs::create_dir_all(&bin_dir).unwrap();
-
-        let exe_path = bin_dir.join("CyberGame.exe");
-        let mut exe_bytes = vec![0u8; 10000];
-        exe_bytes[100..117].copy_from_slice(b"D3D12CreateDevice");
-        fs::write(&exe_path, &exe_bytes).unwrap();
-
-        let orig_dlss = bin_dir.join("nvngx_dlss.dll");
-        fs::write(&orig_dlss, b"ORIGINAL_DLSS_BINARY").unwrap();
-        fs::write(bin_dir.join("D3D12Core.dll"), b"core").unwrap();
-
-        let opts = DeployOptions {
-            game_name: Some("CyberGame".to_string()),
-            game_dir: temp_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 12".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        // 1. Deploy Native DLSS 5
-        let res = deploy_native_dlss5(&opts).expect("deploy_native_dlss5 should succeed");
-        assert!(res.success);
-
-        assert!(bin_dir.join("dxgi.dll").exists(), "dxgi.dll hook should be deployed in nested bin/x64");
-        assert!(bin_dir.join("renodx-dlss5.addon64").exists(), "renodx-dlss5.addon64 should be in bin/x64");
-        assert!(bin_dir.join("renodx-mfgunlock.addon64").exists(), "renodx-mfgunlock.addon64 should be in bin/x64");
-        assert!(bin_dir.join("ReShade.ini").exists(), "ReShade.ini should be in bin/x64");
-
-        // 2. Rescan directory: must recognize ReShade & Add-on
-        let scanned = crate::core::scan::scan_game_directory(&temp_dir).expect("game should be recognized");
-        assert!(scanned.reshade_installed, "Reshade must be detected after deploy");
-        assert!(scanned.addon_installed, "Add-on must be detected after deploy");
-        assert_eq!(scanned.installed_route, Some("native".to_string()));
-
-        // 3. Clean untracked mods with exe
-        let removed = crate::core::journal::clean_untracked_mods_with_exe(&temp_dir, Some(&exe_path)).expect("clean should succeed");
-        assert!(removed.iter().any(|r| r.contains("dxgi.dll")), "Cleaned files must include dxgi.dll: {:?}", removed);
-        assert!(removed.iter().any(|r| r.contains("renodx-dlss5.addon64")), "Cleaned files must include renodx-dlss5.addon64: {:?}", removed);
-        assert!(removed.iter().any(|r| r.contains("renodx-mfgunlock.addon64")), "Cleaned files must include renodx-mfgunlock.addon64: {:?}", removed);
-
-        // 4. Verify nested directory is completely clean of mod files, but original game files remain intact!
-        assert!(!bin_dir.join("dxgi.dll").exists(), "dxgi.dll must be purged from bin/x64");
-        assert!(!bin_dir.join("renodx-dlss5.addon64").exists(), "renodx-dlss5.addon64 must be purged from bin/x64");
-        assert!(!bin_dir.join("renodx-mfgunlock.addon64").exists(), "renodx-mfgunlock.addon64 must be purged from bin/x64");
-        assert!(!bin_dir.join("ReShade.ini").exists(), "ReShade.ini must be purged from bin/x64");
-        assert!(bin_dir.join("CyberGame.exe").exists(), "Original game executable must not be deleted");
-        assert_eq!(fs::read(&orig_dlss).unwrap(), b"ORIGINAL_DLSS_BINARY", "Original DLSS file must remain untouched");
-
-        // 5. Rescan directory from disk: must report NOT INSTALLED across app restarts
-        let after_clean = crate::core::scan::scan_game_directory(&temp_dir).expect("game should be recognized after clean");
-        assert!(!after_clean.reshade_installed, "ReShade must be false after clean");
-        assert!(!after_clean.addon_installed, "Add-on must be false after clean");
-        assert_eq!(after_clean.installed_route, None, "Installed route must be None after clean");
-        let _ = crate::core::state::save_state(&orig_state);
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_prevent_reshade_hook_corrupted_into_backup() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        if find_optiscaler_payload().is_none() || find_renodx_payload().is_none() {
-            println!("OptiScaler or RenoDX payload not installed on this runner; skipping test.");
-            return;
-        }
-        let temp_dir = std::env::temp_dir().join(format!("dlss_dirty_backup_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
-        let bin_dir = temp_dir.join("bin").join("x64");
-        fs::create_dir_all(&bin_dir).unwrap();
-
-        let exe_path = bin_dir.join("Game.exe");
-        let mut exe_bytes = vec![0u8; 10000];
-        exe_bytes[100..117].copy_from_slice(b"D3D12CreateDevice");
-        fs::write(&exe_path, &exe_bytes).unwrap();
-        fs::write(bin_dir.join("D3D12Core.dll"), b"core").unwrap();
-
-        // Simulate pre-existing ReShade dxgi.dll sitting in the directory
-        let pre_existing_dxgi = bin_dir.join("dxgi.dll");
-        let mut reshade_bytes = vec![0u8; 50000];
-        reshade_bytes[20000..20007].copy_from_slice(b"ReShade");
-        fs::write(&pre_existing_dxgi, &reshade_bytes).unwrap();
-
-        // Verify is_known_mod_file detects it
-        assert!(is_known_mod_file(&pre_existing_dxgi), "is_known_mod_file must recognize pre-existing ReShade dxgi.dll");
-
-        let opts = DeployOptions {
-            game_name: Some("Game".to_string()),
-            game_dir: temp_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 12".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_native_dlss5(&opts).expect("deploy should succeed");
-        assert!(res.success);
-
-        // Crucial verification: pre-existing ReShade dxgi.dll must NEVER have been backed up as an "original file"!
-        let backup_dxgi = temp_dir.join("_DLSS5_Backup").join("bin").join("x64").join("dxgi.dll");
-        assert!(!backup_dxgi.exists(), "ReShade hook must never be copied to _DLSS5_Backup as an original file");
-
-        let manifest = crate::core::journal::read_manifest(&temp_dir).expect("manifest should exist");
-        assert!(!manifest.replaced.iter().any(|r| r.rel.contains("dxgi.dll")), "manifest.replaced must not contain dxgi.dll");
-
-        // Now restore: must cleanly wipe the mod and leave no residual ReShade
-        let restored = crate::core::journal::restore_game(&temp_dir).expect("restore should succeed");
-        assert!(restored);
-
-        assert!(!bin_dir.join("dxgi.dll").exists(), "Restoring must not leave or restore ReShade hook");
-
-        let scanned = crate::core::scan::scan_game_directory(&temp_dir).expect("scan should succeed");
-        assert!(!scanned.reshade_installed, "ReShade must be false after restore");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_overlay_addon_strictly_not_deployed_while_shelved() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        if find_optiscaler_payload().is_none() || find_renodx_payload().is_none() {
-            println!("OptiScaler or RenoDX payload not installed on this runner; skipping test.");
-            return;
-        }
-
-        let temp_dir = std::env::temp_dir().join(format!("dlss_overlay_shelved_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
-        let bin_dir = temp_dir.join("bin").join("x64");
-        fs::create_dir_all(&bin_dir).unwrap();
-
-        let exe_path = bin_dir.join("CyberGame.exe");
-        let mut exe_bytes = vec![0u8; 10000];
-        exe_bytes[100..117].copy_from_slice(b"D3D12CreateDevice");
-        fs::write(&exe_path, &exe_bytes).unwrap();
-        fs::write(bin_dir.join("D3D12Core.dll"), b"core").unwrap();
-
-        let orig_state = crate::core::state::load_state();
-
-        let opts = DeployOptions {
-            game_name: Some("CyberGame".to_string()),
-            game_dir: temp_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 12".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_native_dlss5(&opts).expect("deploy_native_dlss5 should succeed");
-        assert!(res.success);
-
-        // Verify dlss5-lab-overlay.addon64 is strictly NOT deployed while shelved
-        let deployed_overlay = bin_dir.join("dlss5-lab-overlay.addon64");
-        assert!(!deployed_overlay.exists(), "dlss5-lab-overlay.addon64 must NEVER be deployed while shelved");
-
-        let manifest = crate::core::journal::read_manifest(&temp_dir).expect("manifest should exist");
-        assert!(!manifest.added.iter().any(|a| a.contains("dlss5-lab-overlay.addon64")), "manifest.added must NOT contain dlss5-lab-overlay.addon64");
-
-        // Clean up
-        let _ = crate::core::journal::clean_untracked_mods_with_exe(&temp_dir, Some(&exe_path));
-        let _ = crate::core::state::save_state(&orig_state);
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_overlay_addon_clean_and_restore_lifecycle() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-
-        let temp_dir = std::env::temp_dir().join(format!("dlss_overlay_lifecycle_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
-        let bin_dir = temp_dir.join("bin").join("x64");
-        fs::create_dir_all(&bin_dir).unwrap();
-
-        let exe_path = bin_dir.join("CyberGame.exe");
-        let mut exe_bytes = vec![0u8; 10000];
-        exe_bytes[100..117].copy_from_slice(b"D3D12CreateDevice");
-        fs::write(&exe_path, &exe_bytes).unwrap();
-        fs::write(bin_dir.join("D3D12Core.dll"), b"core").unwrap();
-
-        // Place pre-existing overlay file in bin directory
-        fs::write(bin_dir.join("dlss5-lab-overlay.addon64"), b"OLD_OVERLAY_BYTES").unwrap();
-        assert!(bin_dir.join("dlss5-lab-overlay.addon64").exists(), "Simulated overlay addon must exist before clean");
-
-        // 1. Clean untracked mods
-        let removed = crate::core::journal::clean_untracked_mods_with_exe(&temp_dir, Some(&exe_path)).expect("clean should succeed");
-        assert!(removed.iter().any(|r| r.contains("dlss5-lab-overlay.addon64")), "Removed files must include dlss5-lab-overlay.addon64: {:?}", removed);
-
-        // 2. Verify complete deletion
-        assert!(!bin_dir.join("dlss5-lab-overlay.addon64").exists(), "dlss5-lab-overlay.addon64 must be purged from disk");
-
-        // 3. Rescan: addon_installed must be false
-        let scanned = crate::core::scan::scan_game_directory(&temp_dir).expect("scan should succeed");
-        assert!(!scanned.addon_installed, "addon_installed must be false after clean");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_deploy_preserves_reshade_defaults() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        if find_optiscaler_payload().is_none() || find_renodx_payload().is_none() {
-            println!("OptiScaler or RenoDX payload not installed on this runner; skipping test.");
-            return;
-        }
-        let temp_dir = std::env::temp_dir().join(format!("dlss_font_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
-        let bin_dir = temp_dir.join("bin").join("x64");
-        fs::create_dir_all(&bin_dir).unwrap();
-
-        let exe_path = bin_dir.join("FontGame.exe");
-        let mut exe_bytes = vec![0u8; 10000];
-        exe_bytes[100..117].copy_from_slice(b"D3D12CreateDevice");
-        fs::write(&exe_path, &exe_bytes).unwrap();
-        fs::write(bin_dir.join("D3D12Core.dll"), b"core").unwrap();
-
-        let opts = DeployOptions {
-            game_name: Some("FontGame".to_string()),
-            game_dir: temp_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 12".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_native_dlss5(&opts).expect("deploy should succeed");
-        assert!(res.success);
-
-        let reshade_ini_path = bin_dir.join("ReShade.ini");
-        assert!(reshade_ini_path.exists(), "ReShade.ini must be deployed");
-
-        let ini_content = fs::read_to_string(&reshade_ini_path).unwrap();
-        let font = get_ini(&ini_content, "STYLE", "Font");
-
-        // Verify ReShade.ini does NOT pollute the global font setting
-        assert_eq!(font, None);
-
-        let _ = crate::core::journal::clean_untracked_mods_with_exe(&temp_dir, Some(&exe_path));
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    impl PayloadBundle {
-        pub fn create_mock(temp: &Path) -> Self {
-            let opti_dir = temp.join("mock_opti_payload");
-            fs::create_dir_all(opti_dir.join("OptiScaler")).unwrap();
-            let optiscaler_dll = opti_dir.join("OptiScaler.dll");
-            fs::write(&optiscaler_dll, b"MOCK_OPTISCALER_PE_BYTES").unwrap();
-            let optiscaler_ini = opti_dir.join("OptiScaler.ini");
-            fs::write(&optiscaler_ini, b"[DlssNr]\nEnabled=false\n\n[Plugins]\nLoadReshade=true\n\n[FrameGen]\nExternal=false\n").unwrap();
-
-            let nr_dll = temp.join("nvngx_dlssnr.dll");
-            fs::write(&nr_dll, b"MOCK_DLSSNR_PE_BYTES").unwrap();
-
-            let rtxmfg = temp.join("RTXMFG.dll");
-            fs::write(&rtxmfg, b"MOCK_RTXMFG_PE_BYTES").unwrap();
-
-            let reshade = temp.join("ReShade64.dll");
-            fs::write(&reshade, b"MOCK_RESHADE_PE_BYTES").unwrap();
-
-            let reshade32 = temp.join("ReShade32.dll");
-            fs::write(&reshade32, b"MOCK_RESHADE32_PE_BYTES").unwrap();
-
-            let renodx = temp.join("renodx-dlss5.addon64");
-            fs::write(&renodx, b"MOCK_RENODX_PE_BYTES").unwrap();
-
-            let mfgunlock = temp.join("renodx-mfgunlock.addon64");
-            fs::write(&mfgunlock, b"MOCK_MFGUNLOCK_PE_BYTES").unwrap();
-
-            let snippet = temp.join("nvngx.dll_dlssnr.dll");
-            fs::write(&snippet, b"MOCK_SNIPPET_PE_BYTES").unwrap();
-
-            let streamline_dir = temp.join("mock_streamline");
-            fs::create_dir_all(&streamline_dir).unwrap();
-            fs::write(streamline_dir.join("sl.interposer.dll"), b"MOCK_SL_INTERPOSER").unwrap();
-            fs::write(streamline_dir.join("sl.common.dll"), b"MOCK_SL_COMMON").unwrap();
-            fs::write(streamline_dir.join("sl.dlss_g.dll"), b"MOCK_SL_DLSSG").unwrap();
-            fs::write(streamline_dir.join("sl.reflex.dll"), b"MOCK_SL_REFLEX").unwrap();
-            fs::write(streamline_dir.join("sl.pcl.dll"), b"MOCK_SL_PCL").unwrap();
-            fs::write(streamline_dir.join("nvngx_dlssg.dll"), b"MOCK_NVNGX_DLSSG").unwrap();
-
-            let feeder_dir = temp.join("mock_feeder");
-            let feeder_shaders = feeder_dir.join("feeder-shaders");
-            fs::create_dir_all(feeder_shaders.join("Shaders")).unwrap();
-            fs::create_dir_all(feeder_shaders.join("Textures")).unwrap();
-            fs::write(feeder_shaders.join("Shaders").join("DLSS5_Feed.fx"), b"// mock feed").unwrap();
-            fs::write(feeder_shaders.join("Shaders").join("vort_Motion.fx"), b"// mock motion").unwrap();
-            fs::write(feeder_shaders.join("Shaders").join("DrawText.fxh"), b"// mock drawtext").unwrap();
-            fs::write(feeder_shaders.join("Textures").join("FontAtlas.png"), b"MOCK_PNG").unwrap();
-            let mock_addon64 = feeder_dir.join("dlss5-feed.addon64");
-            fs::write(&mock_addon64, b"MOCK_FEEDER_ADDON_64").unwrap();
-
-            let mock_addon32 = feeder_dir.join("dlss5-feed.addon32");
-            fs::write(&mock_addon32, b"MOCK_FEEDER_ADDON_32").unwrap();
-
-            let mock_host64 = feeder_dir.join("dlss5-feed-host64.exe");
-            fs::write(&mock_host64, b"MOCK_FEEDER_HOST64_EXE").unwrap();
-
-            let mock_feeder = crate::core::downloader::FeederComponents {
-                addon64: mock_addon64,
-                addon32: Some(mock_addon32),
-                host64: Some(mock_host64),
-                shader_dir: feeder_shaders,
-                vk_layer_dir: None,
-            };
-
-            let mock_dgvoodoo_dir = temp.join("mock_dgvoodoo");
-            fs::create_dir_all(&mock_dgvoodoo_dir).unwrap();
-            let mock_d3d9_x86 = mock_dgvoodoo_dir.join("D3D9_x86.dll");
-            let mock_d3d9_x64 = mock_dgvoodoo_dir.join("D3D9_x64.dll");
-            let mock_d3d8_x86 = mock_dgvoodoo_dir.join("D3D8_x86.dll");
-            let mock_dg_conf = mock_dgvoodoo_dir.join("dgVoodoo.conf");
-            fs::write(&mock_d3d9_x86, b"MOCK_DGVOODOO_D3D9_X86").unwrap();
-            fs::write(&mock_d3d9_x64, b"MOCK_DGVOODOO_D3D9_X64").unwrap();
-            fs::write(&mock_d3d8_x86, b"MOCK_DGVOODOO_D3D8_X86").unwrap();
-            fs::write(&mock_dg_conf, b"[DirectX]\ndgVoodooWatermark = true\n[General]\nDisableAndPassThru = true\n").unwrap();
-
-            let mock_dgvoodoo = crate::core::downloader::DgVoodooComponents {
-                d3d9_x86: mock_d3d9_x86,
-                d3d9_x64: mock_d3d9_x64,
-                d3d8_x86: Some(mock_d3d8_x86),
-                conf: mock_dg_conf,
-            };
-
-            let dlss_dll = temp.join("nvngx_dlss.dll");
-            fs::write(&dlss_dll, b"MOCK_DLSS_PE_BYTES").unwrap();
-
-            Self {
-                optiscaler_dll,
-                optiscaler_ini,
-                optiscaler_dir: Some(opti_dir.join("OptiScaler")),
-                nvngx_dlss_dll: Some(dlss_dll),
-                nvngx_dlssnr_dll: Some(nr_dll),
-                nvngx_snippet_dll: Some(snippet),
-                rtxmfg_dll: Some(rtxmfg),
-                reshade64_dll: Some(reshade),
-                reshade32_dll: Some(reshade32),
-                renodx_dlss5_addon: Some(renodx),
-                renodx_mfgunlock_addon: Some(mfgunlock),
-                feeder_components: Some(mock_feeder),
-                streamline_dir: Some(streamline_dir),
-                dgvoodoo: Some(mock_dgvoodoo),
-            }
-        }
-    }
-
-    #[test]
-    fn test_optiscaler_route_deploys_expected_files_and_strictly_excludes_reshade() {
-        let temp_dir = std::env::temp_dir().join(format!("test_pure_opti_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("GameDir");
-        let bin_dir = game_dir.join("bin").join("x64");
-        fs::create_dir_all(&bin_dir).unwrap();
-
-        let exe_path = bin_dir.join("Game.exe");
-        fs::write(&exe_path, b"DUMMY_GAME_EXE").unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("Pure Opti Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 12".to_string(),
-            pre_sr: true,
-            passes: 2,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_optiscaler_with_bundle(&opts, &payloads).expect("deploy_optiscaler_with_bundle must succeed");
-        assert!(res.success);
-
-        // 1. Positive assertions: Pure OptiScaler and Standalone RTXMFG must exist
-        assert!(bin_dir.join("dxgi.dll").exists(), "OptiScaler dxgi.dll must be deployed");
-        assert!(bin_dir.join("version.dll").exists(), "Standalone RTXMFG version.dll must be deployed");
-        assert!(bin_dir.join("OptiScaler.ini").exists(), "OptiScaler.ini must be deployed");
-        assert!(bin_dir.join("nvngx_dlssnr.dll").exists(), "nvngx_dlssnr.dll must be deployed");
-        assert!(bin_dir.join("nvngx.dll_dlssnr.dll").exists(), "nvngx.dll_dlssnr.dll must be deployed");
-
-        // 2. Strict Negative assertions: ZERO ReShade or add-on files allowed
-        assert!(!bin_dir.join("ReShade64.dll").exists(), "ReShade64.dll must NEVER be deployed in OptiScaler route");
-        assert!(!bin_dir.join("ReShade.ini").exists(), "ReShade.ini must NEVER be deployed in OptiScaler route");
-        assert!(!bin_dir.join("renodx-dlss5.addon64").exists(), "renodx-dlss5.addon64 must NEVER be deployed in OptiScaler route");
-        assert!(!bin_dir.join("renodx-mfgunlock.addon64").exists(), "renodx-mfgunlock.addon64 must NEVER be deployed in OptiScaler route");
-        assert!(!bin_dir.join("dlss5-lab-overlay.addon64").exists(), "overlay addon must NEVER be deployed in OptiScaler route");
-
-        // 3. Ini inspection: LoadReshade must be false, External must be true, PreSR configured
-        let ini_content = fs::read_to_string(bin_dir.join("OptiScaler.ini")).unwrap();
-        assert_eq!(get_ini(&ini_content, "Plugins", "LoadReshade"), Some("false".to_string()));
-        assert_eq!(get_ini(&ini_content, "FrameGen", "External"), Some("true".to_string()));
-        assert_eq!(get_ini(&ini_content, "DlssNr", "Enabled"), Some("true".to_string()));
-        assert_eq!(get_ini(&ini_content, "DlssNr", "RunBeforeSR"), Some("true".to_string()));
-        assert_eq!(get_ini(&ini_content, "DlssNr", "Passes"), Some("2".to_string()));
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_optiscaler_route_without_mfg() {
-        let temp_dir = std::env::temp_dir().join(format!("test_opti_no_mfg_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("GameDir");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Game.exe");
-        fs::write(&exe_path, b"DUMMY_GAME_EXE").unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("Opti No MFG".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "dxgi".to_string(),
-            pre_sr: true,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_optiscaler_with_bundle(&opts, &payloads).expect("deploy must succeed");
-        assert!(res.success);
-
-        // version.dll must NOT be deployed
-        assert!(!game_dir.join("version.dll").exists(), "version.dll must not be deployed when mfg_unlock is false");
-
-        // External FG must be false
-        let ini_content = fs::read_to_string(game_dir.join("OptiScaler.ini")).unwrap();
-        assert_eq!(get_ini(&ini_content, "FrameGen", "External"), Some("false".to_string()));
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_streamline_game_deploys_version_dll_with_external_framegen() {
-        let temp_dir = std::env::temp_dir().join(format!("test_streamline_mfg_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("Cyberpunk2077");
-        let bin_dir = game_dir.join("bin").join("x64");
-        fs::create_dir_all(&bin_dir).unwrap();
-
-        let exe_path = bin_dir.join("Cyberpunk2077.exe");
-        fs::write(&exe_path, b"DUMMY_CYBERPUNK_EXE").unwrap();
-
-        // Simulate native Streamline files present in Cyberpunk 2077
-        fs::write(bin_dir.join("sl.interposer.dll"), b"MOCK_STREAMLINE_INTERPOSER").unwrap();
-        fs::write(bin_dir.join("sl.common.dll"), b"MOCK_STREAMLINE_COMMON").unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("Cyberpunk 2077".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 12".to_string(),
-            pre_sr: true,
-            passes: 1,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_optiscaler_with_bundle(&opts, &payloads).expect("deploy must succeed");
-        assert!(res.success);
-
-        // Positive assertions: OptiScaler and DLSS-NR files deployed
-        assert!(bin_dir.join("dxgi.dll").exists(), "OptiScaler dxgi.dll must be deployed");
-        assert!(bin_dir.join("nvngx_dlssnr.dll").exists(), "nvngx_dlssnr.dll must be deployed");
-        assert!(bin_dir.join("nvngx.dll_dlssnr.dll").exists(), "nvngx.dll_dlssnr.dll must be deployed");
-        assert!(bin_dir.join("OptiScaler.ini").exists(), "OptiScaler.ini must be deployed");
-
-        // RTX40-MFG doc adherence: version.dll, RTXMFG-Universal.json, and RTX40MFG-Universal.json must be deployed
-        assert!(
-            bin_dir.join("version.dll").exists(),
-            "Standalone RTXMFG version.dll must be deployed to provide 4x MFG unlock"
-        );
-        assert!(
-            bin_dir.join("RTXMFG-Universal.json").exists(),
-            "RTXMFG-Universal.json configuration must be deployed"
-        );
-        assert!(
-            bin_dir.join("RTX40MFG-Universal.json").exists(),
-            "RTX40MFG-Universal.json configuration must be deployed"
-        );
-
-        // Streamline 2.14.1 stack deployed and replaces old local DLLs
-        assert_eq!(fs::read(bin_dir.join("sl.interposer.dll")).unwrap(), b"MOCK_SL_INTERPOSER");
-        assert_eq!(fs::read(bin_dir.join("sl.common.dll")).unwrap(), b"MOCK_SL_COMMON");
-        assert_eq!(fs::read(bin_dir.join("sl.reflex.dll")).unwrap(), b"MOCK_SL_REFLEX");
-
-        let ini_content = fs::read_to_string(bin_dir.join("OptiScaler.ini")).unwrap();
-        assert_eq!(get_ini(&ini_content, "FrameGen", "External"), Some("true".to_string()));
-        assert_eq!(get_ini(&ini_content, "DLSSG", "InterpolationCount"), Some("auto".to_string()));
-        assert_eq!(get_ini(&ini_content, "DLSSG", "OverrideInterpolationCount"), Some("auto".to_string()));
-
-        // Restore backup via journal
-        let restored = crate::core::journal::restore_game(&game_dir).expect("restore must succeed");
-        assert!(restored);
-
-        // Original Streamline files must be restored
-        assert_eq!(fs::read(bin_dir.join("sl.interposer.dll")).unwrap(), b"MOCK_STREAMLINE_INTERPOSER");
-        assert_eq!(fs::read(bin_dir.join("sl.common.dll")).unwrap(), b"MOCK_STREAMLINE_COMMON");
-        assert!(!bin_dir.join("sl.reflex.dll").exists(), "sl.reflex.dll must be wiped on restore");
-        assert!(!bin_dir.join("version.dll").exists(), "version.dll must be wiped on restore");
-        assert!(!bin_dir.join("OptiScaler.ini").exists(), "OptiScaler.ini must be wiped on restore");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_reshade_route_deploys_expected_files_and_strictly_excludes_optiscaler() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_pure_reshade_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("GameDir");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Game.exe");
-        fs::write(&exe_path, b"DUMMY_GAME_EXE").unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("ReShade Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 12".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_native_dlss5_with_bundle(&opts, &payloads).expect("deploy_native_dlss5_with_bundle must succeed");
-        assert!(res.success);
-
-        // 1. Positive assertions: ReShade + RenoDX + ReShade 4x MFG unlock addon must exist
-        assert!(game_dir.join("dxgi.dll").exists(), "ReShade dxgi.dll must be deployed");
-        assert!(game_dir.join("renodx-dlss5.addon64").exists(), "renodx-dlss5.addon64 must be deployed");
-        assert!(game_dir.join("nvngx_dlssnr.dll").exists(), "nvngx_dlssnr.dll must be deployed for RenoDX DLSS 5 Neural Rendering");
-        assert!(game_dir.join("renodx-mfgunlock.addon64").exists(), "renodx-mfgunlock.addon64 must be deployed");
-        assert!(game_dir.join("ReShade.ini").exists(), "ReShade.ini must be deployed");
-
-        // 2. Strict Negative assertions: ZERO OptiScaler files allowed
-        assert!(!game_dir.join("OptiScaler.ini").exists(), "OptiScaler.ini must NEVER be deployed in ReShade route");
-        assert!(!game_dir.join("OptiScaler").exists(), "OptiScaler directory must NEVER be deployed in ReShade route");
-        assert!(!game_dir.join("version.dll").exists(), "Standalone RTXMFG version.dll must NEVER be deployed in ReShade route");
-        assert!(!game_dir.join("nvngx.dll_dlssnr.dll").exists(), "nvngx.dll_dlssnr.dll must NEVER be in ReShade route");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_reshade_route_mfg_disabled() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_pure_reshade_no_mfg_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("GameDir");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Game.exe");
-        fs::write(&exe_path, b"DUMMY_GAME_EXE").unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("ReShade No MFG".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 12".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_native_dlss5_with_bundle(&opts, &payloads).expect("deploy must succeed");
-        assert!(res.success);
-
-        assert!(!game_dir.join("renodx-mfgunlock.addon64").exists(), "renodx-mfgunlock.addon64 must NOT be deployed when mfg_unlock is false");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_feeder_route_deploys_only_feeder_and_strictly_excludes_mfg_and_presr() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_feeder_pure_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("GameDir");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Game.exe");
-        fs::write(&exe_path, b"DUMMY_GAME_EXE").unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("Feeder Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "dxgi".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle must succeed");
-        assert!(res.success);
-
-        // 1. Positive assertions: Feeder + Shaders + DLSS-5 Neural Rendering
-        assert!(game_dir.join("dxgi.dll").exists(), "ReShade dxgi.dll must be deployed");
-        assert!(game_dir.join("ReShade.ini").exists(), "ReShade.ini must be deployed");
-        assert!(game_dir.join("dlss5-feed.addon64").exists(), "dlss5-feed.addon64 must be deployed");
-        assert!(game_dir.join("renodx-dlss5.addon64").exists(), "renodx-dlss5.addon64 must be deployed for neural rendering");
-        assert!(game_dir.join("nvngx_dlssnr.dll").exists(), "nvngx_dlssnr.dll must be deployed for neural rendering");
-        assert!(game_dir.join("nvngx_dlss.dll").exists(), "nvngx_dlss.dll must be deployed for Streamline Feeder Super Sampling");
-        assert!(game_dir.join("reshade-shaders").join("Shaders").join("DrawText.fxh").exists(), "DrawText.fxh must be deployed");
-        assert!(game_dir.join("reshade-shaders").join("Textures").join("FontAtlas.png").exists(), "FontAtlas.png must be deployed");
-
-        // 2. Strict Negative assertions: NO MFG (when mfg_unlock: false), NO Pre-SR, NO OptiScaler
-        assert!(!game_dir.join("version.dll").exists(), "version.dll must NOT be in Feeder route");
-        assert!(!game_dir.join("renodx-mfgunlock.addon64").exists(), "renodx-mfgunlock.addon64 must NOT be in Feeder route when mfg_unlock is false");
-        assert!(!game_dir.join("OptiScaler.ini").exists(), "OptiScaler.ini must NOT be in Feeder route");
-        assert!(!game_dir.join("OptiScaler").exists(), "OptiScaler dir must NOT be in Feeder route");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_feeder_route_deploys_mfg_and_dlssnr_when_mfg_unlock_enabled() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_feeder_mfg_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("GameDir");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Game.exe");
-        fs::write(&exe_path, b"DUMMY_GAME_EXE").unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("Feeder MFG Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "dxgi".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle must succeed");
-        assert!(res.success);
-
-        // Positive assertions: ReShade + RenoDX MFG + RenoDX DLSS-5 + nvngx_dlssnr must exist
-        assert!(game_dir.join("dxgi.dll").exists(), "ReShade dxgi.dll must be deployed");
-        assert!(game_dir.join("renodx-mfgunlock.addon64").exists(), "renodx-mfgunlock.addon64 must be deployed on Feeder with MFG");
-        assert!(game_dir.join("renodx-dlss5.addon64").exists(), "renodx-dlss5.addon64 must be deployed on Feeder with MFG");
-        assert!(game_dir.join("nvngx_dlssnr.dll").exists(), "nvngx_dlssnr.dll must be deployed on Feeder with MFG");
-        assert!(game_dir.join("ReShade.ini").exists(), "ReShade.ini must be deployed");
-
-        let ini_content = fs::read_to_string(game_dir.join("ReShade.ini")).unwrap();
-        assert!(ini_content.contains("[RenoDX.MFGUnlock]"), "[RenoDX.MFGUnlock] section must be written");
-        assert!(ini_content.contains("ForceMultiplier=4"), "ForceMultiplier=4 must be written for 4x frame generation");
-        assert!(ini_content.contains("EnableHooks=1"), "ReShade.ini in Feeder mode specifies EnableHooks=1 for swapchain and direct presentation interception");
-        assert!(ini_content.contains("NeuralUplift=1"), "ReShade.ini in Feeder mode specifies NeuralUplift=1 for Neural Rendering");
-
-        // Verify root preset formatting
-        let preset_content = fs::read_to_string(game_dir.join("ReShadePreset.ini")).unwrap();
-        assert!(preset_content.starts_with("Techniques=vort_MotionEffects@vort_Motion.fx,DLSS5_Feed@DLSS5_Feed.fx"), "Techniques must be at root of ReShadePreset.ini");
-        assert!(!preset_content.starts_with("[ReShadePreset.ini]"), "ReShadePreset.ini must NOT contain a section header at line 1");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_feeder_route_dx11_configures_preset_root_and_enables_mfg() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_feeder_dx11_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("GameDir");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Game_DX11.exe");
-        fs::write(&exe_path, b"DUMMY_DX11_GAME_EXE").unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("DirectX 11 Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 11".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: true, // User requested MFG in UI or options
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle must succeed for DX11");
-        assert!(res.success);
-
-        // 1. Positive assertion: ReShade + RenoDX MFG + RenoDX DLSS-5 + nvngx_dlssnr must exist
-        assert!(game_dir.join("dxgi.dll").exists(), "ReShade dxgi.dll must be deployed for DX11");
-        assert!(game_dir.join("dlss5-feed.addon64").exists(), "dlss5-feed.addon64 must be deployed for DX11");
-        assert!(game_dir.join("renodx-dlss5.addon64").exists(), "renodx-dlss5.addon64 must be deployed for DX11");
-        assert!(game_dir.join("nvngx_dlssnr.dll").exists(), "nvngx_dlssnr.dll must be deployed for DX11");
-        assert!(game_dir.join("nvngx_dlss.dll").exists(), "nvngx_dlss.dll must be deployed for DX11");
-        assert!(game_dir.join("ReShade.ini").exists(), "ReShade.ini must be deployed for DX11");
-
-        // 2. Gating assertion: renodx-mfgunlock.addon64 must NOT be deployed on DX11
-        assert!(!game_dir.join("renodx-mfgunlock.addon64").exists(), "renodx-mfgunlock.addon64 must NOT be deployed on DX11 games");
-
-        // 3. ReShade.ini content verification
-        let ini_content = fs::read_to_string(game_dir.join("ReShade.ini")).unwrap();
-        assert!(ini_content.contains("EnableHooks=1"), "ReShade.ini specifies EnableHooks=1 for swapchain and direct presentation interception");
-        assert!(ini_content.contains("NeuralUplift=1"), "ReShade.ini in DX11 Feeder mode specifies NeuralUplift=1 for Neural Rendering");
-        assert!(!ini_content.contains("[RenoDX.MFGUnlock]"), "[RenoDX.MFGUnlock] section must NOT be written for DX11 titles without native DLSS-G");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_feeder_route_vulkan_uses_dxgi_and_cleans_stale_winmm() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_feeder_vulkan_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("GameDir");
-        let bin_dir = game_dir.join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-
-        let exe_path = bin_dir.join("Game.exe");
-        fs::write(&exe_path, b"DUMMY_GAME_EXE").unwrap();
-
-        // Place a stale proxy winmm.dll left behind by an older deployment
-        let stale_winmm = bin_dir.join("winmm.dll");
-        fs::write(&stale_winmm, b"MOCK_RESHADE_PE_BYTES").unwrap();
-        assert!(stale_winmm.exists());
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("Vulkan Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "Vulkan".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle must succeed");
-        assert!(res.success);
-
-        // Positive assertion: dxgi.dll MUST be used for Vulkan
-        assert!(bin_dir.join("dxgi.dll").exists(), "dxgi.dll must be deployed for Vulkan game");
-        assert!(bin_dir.join("renodx-mfgunlock.addon64").exists(), "renodx-mfgunlock.addon64 must be deployed for Vulkan game with MFG unlock");
-        let ini_content = fs::read_to_string(bin_dir.join("ReShade.ini")).unwrap();
-        assert!(ini_content.contains("[RenoDX.MFGUnlock]"), "[RenoDX.MFGUnlock] must be written for Vulkan game with MFG unlock");
-
-        // Negative assertion: winmm.dll MUST be deleted and cleaned up
-        assert!(!bin_dir.join("winmm.dll").exists(), "Obsolete winmm.dll proxy must be deleted so timeGetTime is not intercepted");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_route_clean_and_rollback() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_rollback_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("GameDir");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Game.exe");
-        fs::write(&exe_path, b"DUMMY_GAME_EXE").unwrap();
-
-        let orig_dxgi = game_dir.join("dxgi.dll");
-        fs::write(&orig_dxgi, b"GENUINE_GAME_DXGI").unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("Rollback Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "dxgi".to_string(),
-            pre_sr: true,
-            passes: 2,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        // Deploy Route 1
-        let res = deploy_optiscaler_with_bundle(&opts, &payloads).expect("deploy must succeed");
-        assert!(res.success);
-        assert_eq!(fs::read(&orig_dxgi).unwrap(), b"MOCK_OPTISCALER_PE_BYTES");
-
-        // Restore backup via journal
-        let restored = crate::core::journal::restore_game(&game_dir).expect("restore must succeed");
-        assert!(restored);
-
-        // Original file must be restored
-        assert_eq!(fs::read(&orig_dxgi).unwrap(), b"GENUINE_GAME_DXGI");
-        assert!(!game_dir.join("version.dll").exists(), "version.dll must be wiped on restore");
-        assert!(!game_dir.join("OptiScaler.ini").exists(), "OptiScaler.ini must be wiped on restore");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_switching_routes_cleans_previous_artifacts() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_switch_routes_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("GameDir");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Game.exe");
-        let mut exe_bytes = vec![0u8; 10000];
-        exe_bytes[100..117].copy_from_slice(b"D3D12CreateDevice");
-        fs::write(&exe_path, &exe_bytes).unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        // 1. Deploy Route 1 (OptiScaler)
-        let opti_opts = DeployOptions {
-            game_name: Some("Switch Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 12".to_string(),
-            pre_sr: true,
-            passes: 2,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-        deploy_optiscaler_with_bundle(&opti_opts, &payloads).unwrap();
-        assert!(game_dir.join("OptiScaler.ini").exists());
-        assert!(game_dir.join("version.dll").exists());
-
-        // 2. Clean
-        let removed = crate::core::journal::clean_untracked_mods_with_exe(&game_dir, Some(&exe_path)).unwrap();
-        assert!(removed.iter().any(|r| r.contains("OptiScaler.ini")));
-
-        // 3. Deploy Route 2 (ReShade + RenoDX)
-        let reshade_opts = DeployOptions {
-            game_name: Some("Switch Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 12".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-        deploy_native_dlss5_with_bundle(&reshade_opts, &payloads).unwrap();
-
-        // Must have ReShade, but strictly NO OptiScaler residue
-        assert!(game_dir.join("renodx-dlss5.addon64").exists());
-        assert!(game_dir.join("ReShade.ini").exists());
-        assert!(!game_dir.join("OptiScaler.ini").exists());
-        assert!(!game_dir.join("version.dll").exists());
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_deploy_fails_cleanly_on_missing_payload() {
-        let temp_dir = std::env::temp_dir().join(format!("test_fail_cleanly_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("GameDir");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Game.exe");
-        fs::write(&exe_path, b"DUMMY_GAME_EXE").unwrap();
-
-        let mut payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-        payloads.optiscaler_dll = temp_dir.join("non_existent_optiscaler.dll");
-
-        let opts = DeployOptions {
-            game_name: Some("Fail Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "dxgi".to_string(),
-            pre_sr: true,
-            passes: 1,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_optiscaler_with_bundle(&opts, &payloads);
-        assert!(res.is_err(), "Must return Err when critical payload is missing");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_ini_parser_handles_malformed_input() {
-        let malformed = "just a random line\nno_equal_sign\n[DlssNr]\n=empty_key\nEnabled=true\n\n[SectionWithoutValue]\nKey=";
-        assert_eq!(get_ini(malformed, "DlssNr", "Enabled"), Some("true".to_string()));
-        assert_eq!(get_ini(malformed, "SectionWithoutValue", "Key"), Some("".to_string()));
-        assert_eq!(get_ini(malformed, "NonExistent", "Key"), None);
-
-        let updated = set_ini(malformed, "DlssNr", "Passes", "3");
-        assert_eq!(get_ini(&updated, "DlssNr", "Passes"), Some("3".to_string()));
-
-        let added_section = set_ini("", "NewSection", "NewKey", "NewVal");
-        assert_eq!(get_ini(&added_section, "NewSection", "NewKey"), Some("NewVal".to_string()));
-    }
-
-    #[test]
-    fn test_generate_optiscaler_ini_all_combinations() {
-        let base = "[DlssNr]\nEnabled=false\n\n[Plugins]\nLoadReshade=true\n";
-
-        // Case A: PreSR true, MFG true, exe provided, nr_style 2 (Cinematic)
-        let res_a = generate_optiscaler_ini(base, true, 3, true, Some("CyberGame.exe"), 2);
-        assert_eq!(get_ini(&res_a, "DlssNr", "Enabled"), Some("true".to_string()));
-        assert_eq!(get_ini(&res_a, "DlssNr", "RunBeforeSR"), Some("true".to_string()));
-        assert_eq!(get_ini(&res_a, "DlssNr", "Passes"), Some("3".to_string()));
-        assert_eq!(get_ini(&res_a, "DlssNr", "ApplyAfterRR"), Some("true".to_string()));
-        assert_eq!(get_ini(&res_a, "DlssNr", "Style"), Some("2".to_string()));
-        assert_eq!(get_ini(&res_a, "Plugins", "LoadReshade"), Some("false".to_string()));
-        assert_eq!(get_ini(&res_a, "FrameGen", "External"), Some("true".to_string()));
-        assert_eq!(get_ini(&res_a, "Menu", "ShortcutKey"), Some("0x2D".to_string()));
-        assert_eq!(get_ini(&res_a, "Init", "TargetProcessName"), Some("CyberGame.exe".to_string()));
-
-        // Case B: PreSR false, MFG false, no exe, nr_style 0
-        let res_b = generate_optiscaler_ini(base, false, 1, false, None, 0);
-        assert_eq!(get_ini(&res_b, "DlssNr", "Enabled"), Some("false".to_string()));
-        assert_eq!(get_ini(&res_b, "DlssNr", "RunBeforeSR"), Some("false".to_string()));
-        assert_eq!(get_ini(&res_b, "DlssNr", "Passes"), Some("1".to_string()));
-        assert_eq!(get_ini(&res_b, "Plugins", "LoadReshade"), Some("false".to_string()));
-        assert_eq!(get_ini(&res_b, "FrameGen", "External"), Some("false".to_string()));
-    }
-
-    #[test]
-    fn test_payload_bundle_from_system_finds_streamline() {
-        let bundle = match PayloadBundle::from_system() {
-            Ok(b) => b,
-            Err(_) => {
-                println!("PayloadBundle not installed on this runner; skipping test.");
-                return;
-            }
-        };
-        assert!(bundle.streamline_dir.is_some(), "Streamline payload directory must be found on system");
-        let dir = bundle.streamline_dir.unwrap();
-        assert!(dir.join("sl.interposer.dll").exists());
-        assert!(dir.join("sl.common.dll").exists());
-        assert!(dir.join("sl.reflex.dll").exists());
-        assert!(dir.join("sl.dlss_g.dll").exists());
-        assert!(dir.join("nvngx_dlssg.dll").exists());
-
-        assert!(bundle.nvngx_snippet_dll.is_some(), "nvngx.dll_dlssnr.dll forwarder must be found on system");
-        let snippet = bundle.nvngx_snippet_dll.unwrap();
-        assert!(snippet.is_file(), "nvngx.dll_dlssnr.dll must be a valid file");
-    }
-
-    #[test]
-    fn test_feeder_preset_root_technique_formatting() {
-        // 1. Fresh empty preset
-        let fresh = configure_feeder_preset("");
-        let first_line = fresh.lines().next().unwrap_or("");
-        assert!(
-            first_line.starts_with("Techniques=vort_MotionEffects@vort_Motion.fx,DLSS5_Feed@DLSS5_Feed.fx"),
-            "First line of preset must be Techniques= and NOT a section header"
-        );
-        assert!(!fresh.starts_with('['), "Preset must not start with a section header");
-        assert!(fresh.contains("TechniqueSorting=vort_MotionEffects@vort_Motion.fx,DLSS5_Feed@DLSS5_Feed.fx"));
-        assert!(fresh.contains("[DLSS5_Feed.fx]"));
-        assert!(fresh.contains("PreprocessorDefinitions=DLSS5_MV_PROVIDER=2"));
-
-        // 2. Legacy preset with erroneous [ReShadePreset.ini] section header at line 1
-        let legacy = "[ReShadePreset.ini]\nTechniques=vort_MotionEffects@vort_Motion.fx\nTechniqueSorting=vort_MotionEffects@vort_Motion.fx\n";
-        let fixed = configure_feeder_preset(legacy);
-        assert!(!fixed.contains("[ReShadePreset.ini]"), "Erroneous section header must be stripped");
-        assert!(fixed.starts_with("Techniques=vort_MotionEffects@vort_Motion.fx,DLSS5_Feed@DLSS5_Feed.fx"));
-
-        // 3. Preset with existing user techniques and other section
-        let existing = "Techniques=CAS@CAS.fx,SMAA@SMAA.fx\nTechniqueSorting=CAS@CAS.fx,SMAA@SMAA.fx\n\n[CAS.fx]\nContrast=0.5\n";
-        let merged = configure_feeder_preset(existing);
-        assert!(merged.starts_with("Techniques=vort_MotionEffects@vort_Motion.fx,DLSS5_Feed@DLSS5_Feed.fx,CAS@CAS.fx,SMAA@SMAA.fx"));
-        assert!(merged.contains("TechniqueSorting=vort_MotionEffects@vort_Motion.fx,DLSS5_Feed@DLSS5_Feed.fx,CAS@CAS.fx,SMAA@SMAA.fx"));
-        assert!(merged.contains("[CAS.fx]\nContrast=0.5"));
-        assert!(merged.contains("[DLSS5_Feed.fx]"));
-    }
-
-    #[test]
-    fn test_feeder_upgrades_outdated_local_dlss_dll_and_restores_original() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_dlss_upgrade_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("GameDir");
-        let bin_dir = game_dir.join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-
-        let exe_path = bin_dir.join("Game.exe");
-        fs::write(&exe_path, b"DUMMY_GAME_EXE").unwrap();
-
-        // Simulate game shipping with an ancient DLSS 2.4.2.0 DLL
-        let original_dlss_bytes = b"ANCIENT_DLSS_2_4_2_0_BYTES";
-        let local_dlss = bin_dir.join("nvngx_dlss.dll");
-        fs::write(&local_dlss, original_dlss_bytes).unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("Upgrade Test Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 11".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        // 1. Deploy Feeder route
-        let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy must succeed");
-        assert!(res.success);
-
-        // nvngx_dlss.dll must now be upgraded to the payload modern version
-        let deployed_bytes = fs::read(&local_dlss).unwrap();
-        assert_eq!(deployed_bytes, b"MOCK_DLSS_PE_BYTES", "Local DLSS DLL must be upgraded to modern payload bytes");
-
-        // nvngx_dlssnr.dll must also be deployed
-        assert!(bin_dir.join("nvngx_dlssnr.dll").exists(), "nvngx_dlssnr.dll must be deployed beside executable");
-
-        // 2. Rollback via journal restore_game
-        let restored = crate::core::journal::restore_game(&game_dir).expect("restore must succeed");
-        assert!(restored, "restore_game must report success");
-
-        // Local nvngx_dlss.dll must be restored to its exact original bytes
-        let restored_bytes = fs::read(&local_dlss).unwrap();
-        assert_eq!(restored_bytes, original_dlss_bytes, "Original DLSS DLL must be restored byte-for-byte");
-
-        // Added files must be cleaned
-        assert!(!bin_dir.join("dxgi.dll").exists(), "dxgi.dll hook must be removed on rollback");
-        assert!(!bin_dir.join("dlss5-feed.addon64").exists(), "dlss5-feed.addon64 must be removed on rollback");
-        assert!(!bin_dir.join("nvngx_dlssnr.dll").exists(), "nvngx_dlssnr.dll must be removed on rollback");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_deploy_opengl_feeder_deploys_opengl32_and_cleans_stale_dxgi() {
-        let _guard = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_deploy_opengl_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("game");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Game.exe");
-        fs::write(&exe_path, b"DUMMY_GAME_EXE").unwrap();
-
-        // Simulate a stale dxgi.dll left over from earlier misclassified deploy
-        let stale_dxgi = game_dir.join("dxgi.dll");
-        fs::write(&stale_dxgi, b"MOCK_RESHADE_BYTES").unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("OpenGL Test Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "OpenGL".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        // Deploy Feeder route for OpenGL game
-        let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy must succeed");
-        assert!(res.success);
-
-        // 1. opengl32.dll must be deployed as hook
-        let hook_path = game_dir.join("opengl32.dll");
-        assert!(hook_path.exists(), "opengl32.dll must be deployed for OpenGL titles");
-
-        // 2. Stale dxgi.dll must be cleaned
-        assert!(!stale_dxgi.exists(), "Stale dxgi.dll must be removed when switching to opengl32.dll");
-
-        // 3. Rollback via journal restore_game
-        let restored = crate::core::journal::restore_game(&game_dir).expect("restore must succeed");
-        assert!(restored, "restore_game must report success");
-        assert!(!hook_path.exists(), "opengl32.dll must be removed on rollback");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_hot_swap_between_feeder_and_optiscaler_without_intermediate_restore() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_hotswap_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("BaldursGate3");
-        let bin_dir = game_dir.join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-
-        let exe_path = bin_dir.join("bg3.exe");
-        let mut exe_bytes = vec![0u8; 10000];
-        exe_bytes[100..110].copy_from_slice(b"vkCreateIn");
-        fs::write(&exe_path, &exe_bytes).unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        // Step 1: Deploy Feeder route with MFG on Vulkan
-        let feeder_opts = DeployOptions {
-            game_name: Some("Baldurs Gate 3".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "Vulkan".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res1 = deploy_feeder_with_bundle(&feeder_opts, &payloads).expect("deploy feeder must succeed");
-        assert!(res1.success);
-
-        assert!(bin_dir.join("dxgi.dll").exists());
-        assert!(bin_dir.join("ReShade.ini").exists());
-        assert!(bin_dir.join("dlss5-feed.addon64").exists());
-        assert!(bin_dir.join("renodx-mfgunlock.addon64").exists());
-        assert!(bin_dir.join("reshade-shaders").exists());
-        assert!(crate::core::vulkan_layer::is_game_registered(&game_dir));
-
-        // Step 2: Directly hot-swap to OptiScaler (WITHOUT calling restore_game!)
-        let opti_opts = DeployOptions {
-            game_name: Some("Baldurs Gate 3".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "Vulkan".to_string(),
-            pre_sr: true,
-            passes: 2,
-            mfg_unlock: true,
-            mfg_multiplier: 4,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res2 = deploy_optiscaler_with_bundle(&opti_opts, &payloads).expect("deploy optiscaler must succeed");
-        assert!(res2.success);
-
-        // OptiScaler files MUST exist
-        assert!(bin_dir.join("dxgi.dll").exists());
-        assert!(bin_dir.join("OptiScaler.ini").exists());
-        assert!(bin_dir.join("version.dll").exists());
-        assert!(bin_dir.join("RTXMFG-Universal.json").exists());
-
-        // ReShade and Feeder artifacts MUST be purged
-        assert!(!bin_dir.join("ReShade.ini").exists(), "ReShade.ini must be purged when hot-swapping to OptiScaler");
-        assert!(!bin_dir.join("ReShadePreset.ini").exists(), "ReShadePreset.ini must be purged");
-        assert!(!bin_dir.join("reshadegui.ini").exists(), "reshadegui.ini must be purged");
-        assert!(!bin_dir.join("dlss5-feed.addon64").exists(), "dlss5-feed.addon64 must be purged");
-        assert!(!bin_dir.join("renodx-mfgunlock.addon64").exists(), "renodx-mfgunlock.addon64 must be purged");
-        assert!(!bin_dir.join("reshade-shaders").exists(), "reshade-shaders directory must be purged");
-        // Vulkan layer MUST be unregistered so ReShade is NOT loaded alongside OptiScaler!
-        assert!(!crate::core::vulkan_layer::is_game_registered(&game_dir), "Vulkan layer must be unregistered when hot-swapping to OptiScaler");
-
-        // Step 3: Directly hot-swap back to Feeder (WITHOUT calling restore_game!)
-        let res3 = deploy_feeder_with_bundle(&feeder_opts, &payloads).expect("deploy feeder 2 must succeed");
-        assert!(res3.success);
-
-        // Feeder files MUST exist and Vulkan layer re-registered
-        assert!(bin_dir.join("ReShade.ini").exists());
-        assert!(bin_dir.join("renodx-mfgunlock.addon64").exists());
-        assert!(crate::core::vulkan_layer::is_game_registered(&game_dir));
-
-        // OptiScaler files MUST be purged
-        assert!(!bin_dir.join("OptiScaler.ini").exists(), "OptiScaler.ini must be purged when hot-swapping to Feeder");
-        assert!(!bin_dir.join("version.dll").exists(), "version.dll must be purged when hot-swapping to Feeder");
-        assert!(!bin_dir.join("RTXMFG-Universal.json").exists(), "RTXMFG-Universal.json must be purged");
-
-        // Step 4: Full Restore
-        let restored = crate::core::journal::restore_game(&game_dir).expect("restore must succeed");
-        assert!(restored);
-        assert!(!bin_dir.join("dxgi.dll").exists());
-        assert!(!bin_dir.join("ReShade.ini").exists());
-        assert!(!bin_dir.join("OptiScaler.ini").exists());
-        assert!(!crate::core::vulkan_layer::is_game_registered(&game_dir));
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_hot_swap_preserves_original_game_files_through_multiple_swaps() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_hotswap_preserve_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("GameDir");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Game.exe");
-        fs::write(&exe_path, b"ORIGINAL_EXE_PAYLOAD").unwrap();
-
-        // Vanilla genuine dxgi.dll
-        let genuine_dxgi = game_dir.join("dxgi.dll");
-        fs::write(&genuine_dxgi, b"GENUINE_GAME_DXGI_CONTENT_12345").unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let feeder_opts = DeployOptions {
-            game_name: Some("Preserve Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 11".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        // Deploy Feeder: replaces genuine dxgi.dll with ReShade
-        deploy_feeder_with_bundle(&feeder_opts, &payloads).unwrap();
-        assert_ne!(fs::read(&genuine_dxgi).unwrap(), b"GENUINE_GAME_DXGI_CONTENT_12345");
-
-        // Swap directly to OptiScaler: replaces dxgi.dll with OptiScaler
-        let opti_opts = DeployOptions {
-            game_name: Some("Preserve Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 11".to_string(),
-            pre_sr: true,
-            passes: 2,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-        deploy_optiscaler_with_bundle(&opti_opts, &payloads).unwrap();
-
-        // Swap directly to Native DLSS 5
-        let native_opts = DeployOptions {
-            game_name: Some("Preserve Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 11".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-        deploy_native_dlss5_with_bundle(&native_opts, &payloads).unwrap();
-
-        // Now restore: genuine dxgi.dll must be 100% restored
-        let restored = crate::core::journal::restore_game(&game_dir).expect("restore must succeed");
-        assert!(restored);
-        assert_eq!(fs::read(&genuine_dxgi).unwrap(), b"GENUINE_GAME_DXGI_CONTENT_12345", "Original vanilla file must be completely preserved across multiple hot-swaps");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    fn create_mock_pe32() -> Vec<u8> {
-        let mut data = vec![0u8; 1024];
-        data[0..2].copy_from_slice(b"MZ");
-        data[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
-        data[0x80..0x84].copy_from_slice(b"PE\0\0");
-        data[0x84..0x86].copy_from_slice(&0x014Cu16.to_le_bytes());
-        data[0x94..0x96].copy_from_slice(&0xE0u16.to_le_bytes());
-        data[0x98..0x9A].copy_from_slice(&0x010Bu16.to_le_bytes());
-        data
-    }
-
-    #[test]
-    fn test_feeder_route_32bit_deploys_reshade32_and_addon32_fallback_without_dgvoodoo() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_feeder_32bit_fallback_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("PsychonautsGame");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Psychonauts.exe");
-        fs::write(&exe_path, create_mock_pe32()).unwrap();
-
-        let pe_info = crate::core::pe::inspect_pe(&exe_path).expect("Mock PE32 must be valid");
-        assert_eq!(pe_info.bitness, 32);
-
-        let mut payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-        payloads.dgvoodoo = None;
-
-        let opts = DeployOptions {
-            game_name: Some("Psychonauts".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 9".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle for 32-bit must succeed");
-        assert!(res.success);
-
-        // 1. Positive assertions: 32-bit hook DLL (d3d9.dll) + 32-bit feeder addon + shaders + configs
-        let d3d9_path = game_dir.join("d3d9.dll");
-        assert!(d3d9_path.exists(), "d3d9.dll must be deployed");
-        assert_eq!(fs::read(&d3d9_path).unwrap(), b"MOCK_RESHADE32_PE_BYTES", "d3d9.dll must be ReShade32.dll in fallback mode");
-
-        assert!(game_dir.join("dlss5-feed.addon32").exists(), "dlss5-feed.addon32 must be deployed for 32-bit process");
-        assert!(game_dir.join("dlss5-feed.cfg").exists(), "dlss5-feed.cfg must be deployed");
-        assert!(game_dir.join("ReShade.ini").exists(), "ReShade.ini must be deployed");
-        assert!(game_dir.join("ReShadePreset.ini").exists(), "ReShadePreset.ini must be deployed");
-        assert!(game_dir.join("reshade-shaders").exists(), "reshade-shaders must be deployed");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_feeder_route_32bit_deploys_dgvoodoo_and_host64_bridge() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_feeder_dgvoodoo_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("PsychonautsGame");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Psychonauts.exe");
-        fs::write(&exe_path, create_mock_pe32()).unwrap();
-
-        let pe_info = crate::core::pe::inspect_pe(&exe_path).expect("Mock PE32 must be valid");
-        assert_eq!(pe_info.bitness, 32);
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("Psychonauts".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 9".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle for 32-bit with dgVoodoo must succeed");
-        assert!(res.success);
-
-        // 1. dgVoodoo D3D9.dll deployed as d3d9.dll
-        let d3d9_path = game_dir.join("d3d9.dll");
-        assert!(d3d9_path.exists(), "d3d9.dll must be deployed");
-        assert_eq!(fs::read(&d3d9_path).unwrap(), b"MOCK_DGVOODOO_D3D9_X86", "d3d9.dll must be dgVoodoo x86");
-
-        // 2. dgVoodoo.conf deployed and configured (watermark brief 3s display, splash screen disabled)
-        let conf_path = game_dir.join("dgVoodoo.conf");
-        assert!(conf_path.exists(), "dgVoodoo.conf must be deployed");
-        let conf_str = fs::read_to_string(&conf_path).unwrap();
-        assert!(conf_str.contains("dgVoodooWatermark=true") || conf_str.contains("dgVoodooWatermark = true"));
-        assert!(conf_str.contains("WatermarkDisplayDuration=3") || conf_str.contains("WatermarkDisplayDuration = 3"));
-        assert!(conf_str.contains("3DfxWatermark=true") || conf_str.contains("3DfxWatermark = true"));
-        assert!(conf_str.contains("3DfxSplashScreen=false") || conf_str.contains("3DfxSplashScreen = false"));
-        assert!(conf_str.contains("VRAM=2048") || conf_str.contains("VRAM = 2048"));
-
-        // 3. ReShade32 deployed as dxgi.dll
-        let dxgi_path = game_dir.join("dxgi.dll");
-        assert!(dxgi_path.exists(), "dxgi.dll must be deployed as ReShade hook");
-        assert_eq!(fs::read(&dxgi_path).unwrap(), b"MOCK_RESHADE32_PE_BYTES", "dxgi.dll must be ReShade32");
-
-        // 4. 32-bit Feeder add-on and shaders
-        assert!(game_dir.join("dlss5-feed.addon32").exists(), "dlss5-feed.addon32 must be deployed");
-        assert!(game_dir.join("dlss5-feed.cfg").exists(), "dlss5-feed.cfg must be deployed");
-        assert!(game_dir.join("ReShade.ini").exists(), "ReShade.ini must be deployed");
-        assert!(game_dir.join("ReShadePreset.ini").exists(), "ReShadePreset.ini must be deployed");
-        assert!(game_dir.join("reshade-shaders").exists(), "reshade-shaders must be deployed");
-
-        // 5. host64 neural bridge directory assembled
-        let host64_dir = game_dir.join("host64");
-        assert!(host64_dir.is_dir(), "host64/ directory must exist");
-        assert!(host64_dir.join("dlss5-feed-host64.exe").exists(), "host64/dlss5-feed-host64.exe must exist");
-        assert_eq!(fs::read(host64_dir.join("dlss5-feed-host64.exe")).unwrap(), b"MOCK_FEEDER_HOST64_EXE");
-        assert!(host64_dir.join("dxgi.dll").exists(), "host64/dxgi.dll (ReShade64) must exist");
-        assert_eq!(fs::read(host64_dir.join("dxgi.dll")).unwrap(), b"MOCK_RESHADE_PE_BYTES");
-        assert!(host64_dir.join("renodx-dlss5.addon64").exists(), "host64/renodx-dlss5.addon64 must exist");
-        assert!(host64_dir.join("nvngx_dlssnr.dll").exists(), "host64/nvngx_dlssnr.dll must exist");
-        assert!(host64_dir.join("nvngx_dlss.dll").exists(), "host64/nvngx_dlss.dll must exist");
-        assert!(host64_dir.join("ReShade.ini").exists(), "host64/ReShade.ini must exist");
-
-        // 6. Strict negative assertions in root: no 64-bit addons in 32-bit game root
-        assert!(!game_dir.join("renodx-dlss5.addon64").exists(), "renodx-dlss5.addon64 must NOT be in 32-bit game root");
-        assert!(!game_dir.join("nvngx_dlssnr.dll").exists(), "nvngx_dlssnr.dll must NOT be in 32-bit game root");
-        assert!(crate::core::pe::is_large_address_aware(&exe_path), "Target 32-bit executable must be patched with LAA (4GB patch)");
-
-        // 7. Verify restore cleanly purges all dgVoodoo, ReShade, and host64 files, and restores original executable
-        let restored = crate::core::journal::restore_game(&game_dir).expect("Restore must succeed");
-        assert!(restored, "Restore must report true");
-        assert!(!game_dir.join("d3d9.dll").exists(), "d3d9.dll must be removed on restore");
-        assert!(!game_dir.join("dgVoodoo.conf").exists(), "dgVoodoo.conf must be removed on restore");
-        assert!(!game_dir.join("dxgi.dll").exists(), "dxgi.dll must be removed on restore");
-        assert!(!game_dir.join("host64").exists(), "host64/ must be removed on restore");
-        assert!(!game_dir.join("dlss5-feed.addon32").exists(), "dlss5-feed.addon32 must be removed on restore");
-        assert!(!crate::core::pe::is_large_address_aware(&exe_path), "Target 32-bit executable must have original non-LAA restored from vanilla backup");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_feeder_route_d3d8_deploys_dgvoodoo_d3d8() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_feeder_d3d8_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("LegacyD3D8Game");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("GameD3D8.exe");
-        fs::write(&exe_path, create_mock_pe32()).unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("Legacy D3D8 Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 8".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle for D3D8 must succeed");
-        assert!(res.success);
-
-        // d3d8.dll must be dgVoodoo D3D8
-        let d3d8_path = game_dir.join("d3d8.dll");
-        assert!(d3d8_path.exists(), "d3d8.dll must be deployed");
-        assert_eq!(fs::read(&d3d8_path).unwrap(), b"MOCK_DGVOODOO_D3D8_X86", "d3d8.dll must be dgVoodoo D3D8");
-
-        // dxgi.dll must be ReShade32
-        let dxgi_path = game_dir.join("dxgi.dll");
-        assert!(dxgi_path.exists(), "dxgi.dll must be deployed");
-        assert_eq!(fs::read(&dxgi_path).unwrap(), b"MOCK_RESHADE32_PE_BYTES");
-
-        // Clean restore
-        let restored = crate::core::journal::restore_game(&game_dir).expect("Restore must succeed");
-        assert!(restored);
-        assert!(!game_dir.join("d3d8.dll").exists());
-        assert!(!game_dir.join("dxgi.dll").exists());
-        assert!(!game_dir.join("dgVoodoo.conf").exists());
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    fn create_mock_pe64() -> Vec<u8> {
-        let mut data = vec![0u8; 1024];
-        data[0..2].copy_from_slice(b"MZ");
-        data[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
-        data[0x80..0x84].copy_from_slice(b"PE\0\0");
-        data[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes()); // IMAGE_FILE_MACHINE_AMD64
-        data[0x94..0x96].copy_from_slice(&0xF0u16.to_le_bytes()); // SizeOfOptionalHeader
-        data[0x98..0x9A].copy_from_slice(&0x020Bu16.to_le_bytes()); // PE32+ (64-bit) magic
-        data
-    }
-
-    #[test]
-    fn test_feeder_route_64bit_deploys_reshade64_and_addon64() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_feeder_64bit_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("CyberpunkGame");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Cyberpunk2077.exe");
-        fs::write(&exe_path, create_mock_pe64()).unwrap();
-
-        let pe_info = crate::core::pe::inspect_pe(&exe_path).expect("Mock PE64 must be valid");
-        assert_eq!(pe_info.bitness, 64);
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        let opts = DeployOptions {
-            game_name: Some("Cyberpunk 2077".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 12".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 0,
-            nr_style_enabled: false,
-        };
-
-        let res = deploy_feeder_with_bundle(&opts, &payloads).expect("deploy_feeder_with_bundle for 64-bit must succeed");
-        assert!(res.success);
-
-        // Positive assertions: 64-bit hook DLL (dxgi.dll) + 64-bit feeder addon + renodx-dlss5 + nvngx_dlssnr
-        let dxgi_path = game_dir.join("dxgi.dll");
-        assert!(dxgi_path.exists(), "dxgi.dll must be deployed");
-        assert_eq!(fs::read(&dxgi_path).unwrap(), b"MOCK_RESHADE_PE_BYTES", "dxgi.dll must be ReShade64.dll");
-
-        assert!(game_dir.join("dlss5-feed.addon64").exists(), "dlss5-feed.addon64 must be deployed for 64-bit process");
-        assert!(game_dir.join("renodx-dlss5.addon64").exists(), "renodx-dlss5.addon64 must be deployed in 64-bit game");
-        assert!(game_dir.join("nvngx_dlssnr.dll").exists(), "nvngx_dlssnr.dll must be deployed in 64-bit game");
-        assert!(game_dir.join("nvngx_dlss.dll").exists(), "nvngx_dlss.dll must be deployed in 64-bit game");
-
-        // Negative assertions: 32-bit addon must not be deployed in 64-bit game
-        assert!(!game_dir.join("dlss5-feed.addon32").exists(), "dlss5-feed.addon32 must NOT be deployed in 64-bit game");
-
-        let manifest = crate::core::journal::read_manifest(&game_dir).expect("Active manifest must exist");
-        assert_eq!(manifest.game.as_ref().and_then(|g| g.bitness), Some(64), "Manifest must record 64-bit architecture");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_nr_style_configuration_across_all_routes() {
-        let _state_lock = STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = std::env::temp_dir().join(format!("test_nr_style_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let game_dir = temp_dir.join("TestGame");
-        fs::create_dir_all(&game_dir).unwrap();
-
-        let exe_path = game_dir.join("Game.exe");
-        fs::write(&exe_path, create_mock_pe64()).unwrap();
-
-        let payloads = PayloadBundle::create_mock(&temp_dir.join("payloads"));
-
-        // 1. Deploy Native Route with nr_style = 2 (Cinematic)
-        let native_opts = DeployOptions {
-            game_name: Some("Test Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 12".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 2,
-            nr_style_enabled: true,
-        };
-        let res_native = deploy_native_dlss5_with_bundle(&native_opts, &payloads).expect("Native deploy must succeed");
-        assert!(res_native.success);
-
-        let reshade_ini = fs::read_to_string(game_dir.join("ReShade.ini")).expect("ReShade.ini must exist");
-        assert_eq!(get_ini(&reshade_ini, "RenoDX.DLSS5", "NRStyle"), Some("2".to_string()), "Native route must write NRStyle=2");
-
-        // 2. Verify scan_game_directory reads back nr_style = 2
-        let scanned = crate::core::scan::scan_game_directory(&game_dir).expect("Scan must find deployed game");
-        assert_eq!(scanned.nr_style, 2, "Scanner must detect nr_style = 2 from ReShade.ini");
-        assert!(scanned.nr_style_enabled, "Scanner must detect nr_style_enabled = true");
-
-        // 3. Deploy Feeder Route with nr_style = 1 (Natural)
-        let feeder_opts = DeployOptions {
-            game_name: Some("Test Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 11".to_string(),
-            pre_sr: false,
-            passes: 1,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 1,
-            nr_style_enabled: true,
-        };
-        let res_feeder = deploy_feeder_with_bundle(&feeder_opts, &payloads).expect("Feeder deploy must succeed");
-        assert!(res_feeder.success);
-
-        let feeder_reshade_ini = fs::read_to_string(game_dir.join("ReShade.ini")).expect("ReShade.ini must exist for Feeder");
-        assert_eq!(get_ini(&feeder_reshade_ini, "RenoDX.DLSS5", "NRStyle"), Some("1".to_string()), "Feeder route must write NRStyle=1");
-
-        // 4. Deploy OptiScaler Route with Pre-SR and nr_style = 2
-        let opti_opts = DeployOptions {
-            game_name: Some("Test Game".to_string()),
-            game_dir: game_dir.clone(),
-            exe_path: exe_path.clone(),
-            api: "DirectX 12".to_string(),
-            pre_sr: true,
-            passes: 3,
-            mfg_unlock: false,
-            mfg_multiplier: 1,
-            nr_style: 2,
-            nr_style_enabled: true,
-        };
-        let res_opti = deploy_optiscaler_with_bundle(&opti_opts, &payloads).expect("OptiScaler deploy must succeed");
-        assert!(res_opti.success);
-
-        let opti_ini = fs::read_to_string(game_dir.join("OptiScaler.ini")).expect("OptiScaler.ini must exist");
-        assert_eq!(get_ini(&opti_ini, "DlssNr", "Style"), Some("2".to_string()), "OptiScaler route must write DlssNr Style=2");
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-}
-
-

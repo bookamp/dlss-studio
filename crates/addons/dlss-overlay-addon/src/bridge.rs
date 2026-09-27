@@ -7,11 +7,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use serde::Deserialize;
-use crate::core::state::{get_appdata_dir, log_message};
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
-const FRAME_MAGIC: u32 = 0x3146_4c44;       // 'FLD1'
+#[doc(hidden)]
+pub const FRAME_MAGIC: u32 = 0x3146_4c44;       // 'FLD1'
 const INPUT_MAGIC: u32 = 0x3149_4c44;       // 'ILD1'
 const HELLO_REPLY_MAGIC: u32 = 0x3148_4c44; // 'DLH1'
 const COMMAND_MAGIC: u32 = 0x3143_4c44;     // 'DLC1'
@@ -708,6 +708,111 @@ pub fn compute_tab0_offsets(has_mfg: bool, has_presr: bool) -> Tab0Offsets {
     }
 }
 
+fn set_ini(text: &str, section: &str, key: &str, value: &str) -> String {
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = text.replace('\u{feff}', "").lines().map(|s| s.to_string()).collect();
+    let header = format!("[{}]", section).to_lowercase();
+    let start_idx = lines.iter().position(|l| l.trim().to_lowercase() == header);
+
+    if let Some(start) = start_idx {
+        let mut end = lines.len();
+        for i in (start + 1)..lines.len() {
+            let t = lines[i].trim();
+            if t.starts_with('[') && t.ends_with(']') {
+                end = i;
+                break;
+            }
+        }
+        let wanted = key.to_lowercase();
+        let mut changed = false;
+        for i in (start + 1)..end {
+            let line = &lines[i];
+            let trimmed = line.trim();
+            if !trimmed.starts_with(';') && !trimmed.starts_with('#') {
+                if let Some((k, _)) = trimmed.split_once('=') {
+                    if k.trim().to_lowercase() == wanted {
+                        lines[i] = format!("{}={}", key, value);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !changed {
+            lines.insert(end, format!("{}={}", key, value));
+        }
+    } else {
+        if !lines.is_empty() && !lines.last().unwrap().is_empty() {
+            lines.push(String::new());
+        }
+        lines.push(format!("[{}]", section));
+        lines.push(format!("{}={}", key, value));
+    }
+    lines.join(newline)
+}
+
+fn configure_mfg_unlock_ini(existing: &str, multiplier: Option<u32>) -> String {
+    let mult = multiplier.unwrap_or(4);
+    let force_multiplier = match mult {
+        2 => "2",
+        3 => "3",
+        4 => "4",
+        _ => "0",
+    };
+    let mut lines: Vec<String> = existing.lines().map(|s| s.to_string()).collect();
+    let mut section_start = None;
+    let mut section_end = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case("[RenoDX.MFGUnlock]") {
+            section_start = Some(i);
+        } else if section_start.is_some() && trimmed.starts_with('[') && trimmed.ends_with(']') {
+            section_end = Some(i);
+            break;
+        }
+    }
+
+    let entries = vec![
+        ("Enabled", "1".to_string()),
+        ("LogLevel", "0".to_string()),
+        ("Method", "0".to_string()),
+        ("ForceMultiplier", force_multiplier.to_string()),
+        ("MaxCount", "4".to_string()),
+        ("TemporalFix", "1".to_string()),
+    ];
+
+    if let Some(start) = section_start {
+        let end = section_end.unwrap_or(lines.len());
+        for (k, v) in entries {
+            let mut found = false;
+            for i in (start + 1)..end {
+                let trimmed = lines[i].trim();
+                if let Some((existing_k, _)) = trimmed.split_once('=') {
+                    if existing_k.trim().eq_ignore_ascii_case(k) {
+                        lines[i] = format!("{}={}", k, v);
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if !found {
+                lines.insert(end, format!("{}={}", k, v));
+            }
+        }
+    } else {
+        if !lines.is_empty() && !lines.last().unwrap().is_empty() {
+            lines.push(String::new());
+        }
+        lines.push("[RenoDX.MFGUnlock]".to_string());
+        for (k, v) in entries {
+            lines.push(format!("{}={}", k, v));
+        }
+    }
+    let newline = if existing.contains("\r\n") { "\r\n" } else { "\n" };
+    lines.join(newline)
+}
+
 pub fn update_mfg_ini(game_dir: &std::path::Path, enabled: bool, multiplier: u32) {
     let reshade_ini = game_dir.join("ReShade.ini");
     let content = if reshade_ini.exists() {
@@ -716,9 +821,9 @@ pub fn update_mfg_ini(game_dir: &std::path::Path, enabled: bool, multiplier: u32
         String::new()
     };
     let updated = if enabled {
-        crate::core::mfg_unlock::configure_mfg_unlock_ini(&content, Some(multiplier))
+        configure_mfg_unlock_ini(&content, Some(multiplier))
     } else {
-        crate::core::optiscaler::set_ini(&content, "RenoDX.MFGUnlock", "Enabled", "0")
+        set_ini(&content, "RenoDX.MFGUnlock", "Enabled", "0")
     };
     let _ = fs::write(&reshade_ini, updated);
 }
@@ -727,9 +832,9 @@ pub fn update_presr_ini(game_dir: &std::path::Path, enabled: bool, passes: u32) 
     let opti_ini = game_dir.join("OptiScaler.ini");
     if opti_ini.exists() {
         let content = fs::read_to_string(&opti_ini).unwrap_or_default();
-        let mut updated = crate::core::optiscaler::set_ini(&content, "DlssNr", "Enabled", if enabled { "true" } else { "false" });
-        updated = crate::core::optiscaler::set_ini(&updated, "DlssNr", "RunBeforeSR", if enabled { "true" } else { "false" });
-        updated = crate::core::optiscaler::set_ini(&updated, "DlssNr", "Passes", &passes.to_string());
+        let mut updated = set_ini(&content, "DlssNr", "Enabled", if enabled { "true" } else { "false" });
+        updated = set_ini(&updated, "DlssNr", "RunBeforeSR", if enabled { "true" } else { "false" });
+        updated = set_ini(&updated, "DlssNr", "Passes", &passes.to_string());
         let _ = fs::write(&opti_ini, updated);
     }
 }
@@ -739,16 +844,16 @@ pub fn sync_presr_to_optiscaler_ini(state: &OverlayUiState) {
         let opti_ini = dir.join("OptiScaler.ini");
         if opti_ini.exists() {
             let content = fs::read_to_string(&opti_ini).unwrap_or_default();
-            let mut updated = crate::core::optiscaler::set_ini(&content, "DlssNr", "Enabled", if state.presr_enabled { "true" } else { "false" });
-            updated = crate::core::optiscaler::set_ini(&updated, "DlssNr", "RunBeforeSR", if state.presr_enabled { "true" } else { "false" });
-            updated = crate::core::optiscaler::set_ini(&updated, "DlssNr", "Passes", &state.presr_passes.to_string());
-            updated = crate::core::optiscaler::set_ini(&updated, "DlssNr", "LocalStructure", &format!("{:.2}", state.structure_intensity));
-            updated = crate::core::optiscaler::set_ini(&updated, "DlssNr", "LocalTone", &format!("{:.2}", state.tone_intensity));
-            updated = crate::core::optiscaler::set_ini(&updated, "DlssNr", "SkinStructure", &format!("{:.2}", state.char_structure));
-            updated = crate::core::optiscaler::set_ini(&updated, "DlssNr", "AutoMask", if state.character_mask { "true" } else { "false" });
-            updated = crate::core::optiscaler::set_ini(&updated, "DlssNr", "Style", &state.nr_style.to_string());
+            let mut updated = set_ini(&content, "DlssNr", "Enabled", if state.presr_enabled { "true" } else { "false" });
+            updated = set_ini(&updated, "DlssNr", "RunBeforeSR", if state.presr_enabled { "true" } else { "false" });
+            updated = set_ini(&updated, "DlssNr", "Passes", &state.presr_passes.to_string());
+            updated = set_ini(&updated, "DlssNr", "LocalStructure", &format!("{:.2}", state.structure_intensity));
+            updated = set_ini(&updated, "DlssNr", "LocalTone", &format!("{:.2}", state.tone_intensity));
+            updated = set_ini(&updated, "DlssNr", "SkinStructure", &format!("{:.2}", state.char_structure));
+            updated = set_ini(&updated, "DlssNr", "AutoMask", if state.character_mask { "true" } else { "false" });
+            updated = set_ini(&updated, "DlssNr", "Style", &state.nr_style.to_string());
             if state.overall_intensity > 0.0 {
-                updated = crate::core::optiscaler::set_ini(&updated, "DlssNr", "Intensity", &format!("{:.2}", state.overall_intensity));
+                updated = set_ini(&updated, "DlssNr", "Intensity", &format!("{:.2}", state.overall_intensity));
             }
             let _ = fs::write(&opti_ini, updated);
         }
@@ -1874,6 +1979,72 @@ pub fn handle_input_packet(
     changed
 }
 
+fn get_appdata_dir() -> PathBuf {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        PathBuf::from(appdata).join("dlss-5-studio")
+    } else {
+        PathBuf::from(".").join(".appdata")
+    }
+}
+
+fn log_message(_msg: &str) {}
+
+#[derive(Default, Deserialize)]
+struct OverlayPreferencesConfig {
+    #[serde(default)]
+    theme: String,
+    #[serde(default)]
+    hotkey: u32,
+    #[serde(default)]
+    enabled: bool,
+}
+
+pub fn get_active_overlay_theme() -> String {
+    let pref_file = get_appdata_dir().join("overlay-preferences.json");
+    if let Ok(c) = fs::read_to_string(pref_file) {
+        if let Ok(cfg) = serde_json::from_str::<OverlayPreferencesConfig>(&c) {
+            return cfg.theme;
+        }
+    }
+    "emerald".to_string()
+}
+
+pub fn get_overlay_hotkey() -> String {
+    let pref_file = get_appdata_dir().join("overlay-preferences.json");
+    if let Ok(c) = fs::read_to_string(pref_file) {
+        if let Ok(cfg) = serde_json::from_str::<OverlayPreferencesConfig>(&c) {
+            return match cfg.hotkey {
+                112 => "F1", 113 => "F2", 114 => "F3", 115 => "F4", 116 => "F5",
+                117 => "F6", 118 => "F7", 119 => "F8", 120 => "F9", 121 => "F10",
+                122 => "F11", 123 => "F12", _ => "F8",
+            }.to_string();
+        }
+    }
+    "F8".to_string()
+}
+
+#[derive(Default, Deserialize)]
+struct MinimalGameEntry {
+    #[serde(default)]
+    dir: String,
+}
+
+#[derive(Default, Deserialize)]
+struct MinimalLibraryConfig {
+    #[serde(default)]
+    cached_games: Vec<MinimalGameEntry>,
+}
+
+fn get_cached_game_dirs() -> Vec<PathBuf> {
+    let p = get_appdata_dir().join("library.json");
+    if let Ok(c) = fs::read_to_string(p) {
+        if let Ok(cfg) = serde_json::from_str::<MinimalLibraryConfig>(&c) {
+            return cfg.cached_games.into_iter().map(|g| PathBuf::from(g.dir)).collect();
+        }
+    }
+    Vec::new()
+}
+
 /// Starts the in-game overlay bridge named pipe server in a background thread.
 pub fn start_overlay_bridge() {
     if RUNNING.swap(true, Ordering::SeqCst) {
@@ -1904,16 +2075,17 @@ pub fn start_overlay_bridge() {
             let _ = fs::write(&endpoint_file, &token);
         }
 
-        let current_state = crate::core::state::load_state();
+        let overlay_hotkey = get_overlay_hotkey();
+        let overlay_theme = get_active_overlay_theme();
         let pipe_name = format!(r"\\.\pipe\dlss5-swapper-overlay-{}", token);
         let mut pipe_wide: Vec<u16> = pipe_name.encode_utf16().collect();
         pipe_wide.push(0);
 
-        log_message(&format!("@{{log_overlay_initialized|{}|{}}}", &current_state.overlay_hotkey, &pipe_name[..40.min(pipe_name.len())]));
+        log_message(&format!("@{{log_overlay_initialized|{}|{}}}", &overlay_hotkey, &pipe_name[..40.min(pipe_name.len())]));
 
         let mut ui_state = OverlayUiState::default();
 
-        match current_state.overlay_theme.as_str() {
+        match overlay_theme.as_str() {
             "blue" | "azure" => {
                 ui_state.accent_color = 0xFF4A_A8EE;
                 ui_state.soft_color = 0x254A_A8EE;
@@ -1933,13 +2105,11 @@ pub fn start_overlay_bridge() {
                 ui_state.bright_color = 0xFFC2_EC66;
             }
             custom_id => {
-                if let Some(ct) = current_state.custom_overlay_themes.iter().find(|c| c.id == custom_id) {
-                    if let Some((r, g, b)) = parse_hex_color(&ct.color) {
-                        ui_state.accent_color = 0xFF00_0000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
-                        ui_state.soft_color = 0x2500_0000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
-                        ui_state.back_color = 0xFF11_1A10;
-                        ui_state.bright_color = 0xFFC2_EC66;
-                    }
+                if let Some((r, g, b)) = parse_hex_color(custom_id) {
+                    ui_state.accent_color = 0xFF00_0000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+                    ui_state.soft_color = 0x2500_0000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+                    ui_state.back_color = 0xFF11_1A10;
+                    ui_state.bright_color = 0xFFC2_EC66;
                 }
             }
         }
@@ -1993,11 +2163,9 @@ pub fn start_overlay_bridge() {
                         }
 
                         if game_dir.is_none() {
-                            let current_state = crate::core::state::load_state();
-                            for g in &current_state.cached_games {
-                                let d = std::path::Path::new(&g.dir);
+                            for d in get_cached_game_dirs() {
                                 if d.join("ReShade.ini").exists() || d.join("renodx-mfgunlock.addon64").exists() || d.join("OptiScaler.ini").exists() {
-                                    game_dir = Some(d.to_path_buf());
+                                    game_dir = Some(d);
                                     break;
                                 }
                             }
@@ -2194,306 +2362,6 @@ fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
     Some((r, g, b))
 }
 
-pub fn sync_overlay_preferences(state: &crate::core::state::AppState) {
-    let appdata = get_appdata_dir();
-    let pref_file = appdata.join("overlay-preferences.json");
 
-    let hotkey_code = match state.overlay_hotkey.to_uppercase().as_str() {
-        "F1" => 112,
-        "F2" => 113,
-        "F3" => 114,
-        "F4" => 115,
-        "F5" => 116,
-        "F6" => 117,
-        "F7" => 118,
-        "F8" => 119,
-        "F9" => 120,
-        "F10" => 121,
-        "F11" => 122,
-        "F12" => 123,
-        _ => 119,
-    };
 
-    let theme_str = match state.overlay_theme.as_str() {
-        "blue" | "azure" => "azure",
-        "purple" | "amethyst" => "amethyst",
-        _ => "emerald",
-    };
 
-    let payload = serde_json::json!({
-        "hotkey": hotkey_code,
-        "theme": theme_str,
-        "enabled": state.overlay_enabled,
-    });
-
-    let _ = fs::write(&pref_file, payload.to_string());
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_render_overlay_surface_packet_structure() {
-        let state = OverlayUiState::default();
-        let frame = render_overlay_surface(&state, 1);
-
-        assert!(frame.len() > 24);
-        let magic = u32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]);
-        let ver = u32::from_le_bytes([frame[4], frame[5], frame[6], frame[7]]);
-        let seq = u32::from_le_bytes([frame[8], frame[9], frame[10], frame[11]]);
-        let width = u32::from_le_bytes([frame[12], frame[13], frame[14], frame[15]]);
-        let height = u32::from_le_bytes([frame[16], frame[17], frame[18], frame[19]]);
-        let byte_len = u32::from_le_bytes([frame[20], frame[21], frame[22], frame[23]]);
-
-        assert_eq!(magic, FRAME_MAGIC);
-        assert_eq!(ver, 1);
-        assert_eq!(seq, 1);
-        assert_eq!(width, PANEL_WIDTH);
-        assert_eq!(height, PANEL_HEIGHT);
-        assert_eq!(byte_len, PANEL_WIDTH * PANEL_HEIGHT * 4);
-        let _ = std::fs::write("target/overlay_surface.raw", &frame[24..]);
-    }
-
-    #[test]
-    fn test_render_overlay_surface_mfg_presr_preview() {
-        let mut state = OverlayUiState::default();
-        state.has_mfg = true;
-        state.mfg_enabled = true;
-        state.mfg_multiplier = 1;
-        state.has_presr = true;
-        state.presr_enabled = false;
-        state.presr_passes = 3;
-        state.fps = 20.0;
-        state.frametime_ms = 50.0;
-        let frame = render_overlay_surface(&state, 1);
-        let _ = std::fs::write("target/overlay_mfg_presr.raw", &frame[24..]);
-    }
-
-    #[test]
-    fn test_input_packet_mode_switching_and_scrolling() {
-        let mut state = OverlayUiState::default();
-
-        // Mode switch click on "Live tools" button at the bottom
-        let switched = handle_input_packet(&mut state, 2, 50, 665, 0);
-        assert!(switched);
-        assert_eq!(state.mode, 1);
-
-        // Switch back to "DLSS controls"
-        let switched_back = handle_input_packet(&mut state, 2, 350, 665, 0);
-        assert!(switched_back);
-        assert_eq!(state.mode, 0);
-
-        // Mouse wheel scrolling
-        let scrolled = handle_input_packet(&mut state, 4, 200, 400, -120);
-        assert!(scrolled);
-        assert!(state.more_scroll > 0.0);
-    }
-
-    #[test]
-    fn test_live_tools_slider_interactivity() {
-        let mut state = OverlayUiState::default();
-        state.mode = 0;
-        state.current_epoch = 10;
-
-        let content_x = 12.0 + 24.0;
-        let track_x = content_x + SLIDER_LABEL_WIDTH;
-
-        // Click down on Structure Intensity slider
-        let changed = handle_input_packet(&mut state, 2, (track_x + 50.0) as i32, 126, 0);
-        assert!(changed);
-        assert_eq!(state.active_slider.as_deref(), Some("structure_intensity"));
-        assert!(state.pending_command.is_some());
-
-        let cmd = state.pending_command.unwrap();
-        assert_eq!(cmd.control_id, 101);
-        assert_eq!(cmd.epoch, 10);
-        assert_eq!(cmd.control_kind, 0);
-    }
-
-    #[test]
-    fn test_command_packet_generation_on_slider_interaction() {
-        let mut state = OverlayUiState::default();
-        state.mode = 0;
-        state.current_epoch = 77;
-
-        let content_x = 12.0 + 24.0;
-        let track_x = content_x + SLIDER_LABEL_WIDTH;
-
-        assert!(handle_input_packet(&mut state, 2, (track_x + 80.0) as i32, 154, 0));
-        let cmd = state.pending_command.take().unwrap();
-        assert_eq!(cmd.control_id, 102); // Tone Intensity
-        assert_eq!(cmd.epoch, 77);
-
-        assert!(handle_input_packet(&mut state, 1, (track_x + 120.0) as i32, 154, 0));
-        let cmd_drag = state.pending_command.take().unwrap();
-        assert_eq!(cmd_drag.control_id, 102);
-
-        handle_input_packet(&mut state, 3, (track_x + 120.0) as i32, 154, 0);
-        assert_eq!(state.active_slider, None);
-        assert!(!state.mouse_down);
-    }
-
-    #[test]
-    fn test_straight_alpha_unpremultiplication_accuracy() {
-        let cases = [
-            (128u8, 64u8, 32u8, 128u8, 255u8, 128u8, 64u8),
-            (255u8, 200u8, 100u8, 255u8, 255u8, 200u8, 100u8),
-            (0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8),
-            (50u8, 50u8, 50u8, 100u8, 128u8, 128u8, 128u8),
-        ];
-
-        for (r, g, b, a, exp_r, exp_g, exp_b) in cases {
-            if a > 0 && a < 255 {
-                let scale = 255.0 / (a as f32);
-                let r_straight = ((r as f32) * scale).min(255.0).round() as u8;
-                let g_straight = ((g as f32) * scale).min(255.0).round() as u8;
-                let b_straight = ((b as f32) * scale).min(255.0).round() as u8;
-                assert_eq!(r_straight, exp_r);
-                assert_eq!(g_straight, exp_g);
-                assert_eq!(b_straight, exp_b);
-            } else {
-                assert_eq!(r, exp_r);
-                assert_eq!(g, exp_g);
-                assert_eq!(b, exp_b);
-            }
-        }
-    }
-
-    #[test]
-    fn test_all_tab0_and_tab1_controls_hit_test_and_dispatch() {
-        let mut state = OverlayUiState::default();
-        state.current_epoch = 42;
-
-        // 1. DLSS ON checkbox (Tab 0, cy = 60.0) -> Emits ONLY ID 103 without ID 200 on clicks
-        assert!(handle_input_packet(&mut state, 2, 50, 62, 0));
-        let cmd = state.pending_command.take().unwrap();
-        assert_eq!(cmd.control_id, 103);
-        assert_eq!(cmd.control_kind, 1);
-        assert_eq!(cmd.epoch, 42);
-        assert!(state.pending_commands.is_empty(), "DLSS ON must not dispatch ID 200 on user clicks");
-
-        // 2. Character Mask checkbox (Tab 0, cy = 192.0)
-        assert!(handle_input_packet(&mut state, 2, 50, 194, 0));
-        let cmd = state.pending_command.take().unwrap();
-        assert_eq!(cmd.control_id, 104);
-        assert_eq!(cmd.control_kind, 1);
-
-        // 3. NR Style Pill (Tab 0, cy = 278.0, index 1)
-        assert!(handle_input_packet(&mut state, 2, 250, 285, 0));
-        let cmd = state.pending_command.take().unwrap();
-        assert_eq!(cmd.control_id, 114);
-        assert_eq!(cmd.control_kind, 4);
-
-        // 4. Tone Intensity slider (Tab 0, cy = 154.0)
-        assert!(handle_input_packet(&mut state, 2, 300, 156, 0));
-        let cmd = state.pending_command.take().unwrap();
-        assert_eq!(cmd.control_id, 102);
-        assert_eq!(cmd.control_kind, 0);
-
-        // 5. Switch to Tab 1
-        assert!(handle_input_packet(&mut state, 2, 50, 665, 0));
-        assert_eq!(state.mode, 1);
-
-        // 6. DLSS Neural Rendering in Tab 1 (cy = 200.0) -> Emits ONLY ID 103
-        assert!(handle_input_packet(&mut state, 2, 50, 202, 0));
-        let cmd = state.pending_command.take().unwrap();
-        assert_eq!(cmd.control_id, 103);
-        assert_eq!(cmd.control_kind, 1);
-        assert!(state.pending_commands.is_empty());
-    }
-
-    #[test]
-    fn test_card_background_is_solid_obsidian() {
-        let state = OverlayUiState::default();
-        let frame = render_overlay_surface(&state, 1);
-        let pixels = &frame[24..];
-        let width = PANEL_WIDTH as usize;
-
-        // Pixel at center of card (x = 200, y = 200) must have solid alpha 255
-        let idx = (200 * width + 200) * 4;
-        let a = pixels[idx + 3];
-        assert_eq!(a, 255, "Card interior must have solid alpha 255 to eliminate 3D game bleed-through");
-
-        // Pixel outside card (x = 2, y = 2) must be transparent (a == 0)
-        let idx_outside = (2 * width + 2) * 4;
-        let a_outside = pixels[idx_outside + 3];
-        assert_eq!(a_outside, 0, "Outside of card must be transparent");
-    }
-
-    #[test]
-    fn test_status_json_deserialization_and_sync() {
-        let json_sample = r#"{"epoch":55,"effects":true,"tools":[],"nrAvailable":true,"nrReason":"","nrEnabled":true,"nrTools":[
-            {"id":101,"kind":0,"name":"Structure Intensity","effect":"RenoDX v4.7","min":0,"max":2,"step":0.01,"value":0.42,"available":true},
-            {"id":102,"kind":0,"name":"Global Tone Intensity","effect":"RenoDX v4.7","min":0,"max":2,"step":0.01,"value":0.33,"available":true},
-            {"id":103,"kind":1,"name":"Enable DLSS Neural Rendering","effect":"RenoDX v4.7","min":0,"max":1,"step":1,"value":1.0,"available":true}
-        ]}"#;
-
-        let status: AddonStatusJson = serde_json::from_str(json_sample).unwrap();
-        assert_eq!(status.epoch, 55);
-        assert!(status.nr_available);
-        assert!(status.nr_enabled);
-        assert_eq!(status.nr_tools.len(), 3);
-        assert_eq!(status.nr_tools[0].value, 0.42);
-        assert!(status.effects);
-    }
-
-    #[test]
-    fn test_tab0_offsets_calculation() {
-        let base = compute_tab0_offsets(false, false);
-        assert_eq!(base.y_top, 58.0);
-        assert_eq!(base.y_global_divider, 86.0);
-
-        let mfg_only = compute_tab0_offsets(true, false);
-        assert!(mfg_only.has_mfg);
-        assert!(!mfg_only.has_presr);
-        assert_eq!(mfg_only.y_mfg_divider, 86.0);
-        assert_eq!(mfg_only.y_global_divider, 86.0 + 68.0);
-
-        let both = compute_tab0_offsets(true, true);
-        assert!(both.has_mfg);
-        assert!(both.has_presr);
-        assert_eq!(both.y_global_divider, 86.0 + 68.0 + 68.0);
-        assert!(both.scroll_view_h >= 90.0);
-    }
-
-    #[test]
-    fn test_reshade_fx_toggle_and_packet_dispatch() {
-        let mut state = OverlayUiState::default();
-        state.current_epoch = 12;
-        state.reshade_fx_enabled = true;
-
-        // Click ReShade FX toggle in top row of Tab 0
-        // content_x is 36.0, half_w is (462 - 12) / 2 = 225.0
-        // Right half starts at 36 + 225 + 12 = 273.0
-        assert!(handle_input_packet(&mut state, 2, 300, 60, 0));
-        assert!(!state.reshade_fx_enabled);
-        let cmd = state.pending_command.take().unwrap();
-        assert_eq!(cmd.control_id, 0);
-        assert_eq!(cmd.control_kind, 3);
-        assert_eq!(cmd.value, 0.0);
-        assert_eq!(cmd.epoch, 12);
-    }
-
-    #[test]
-    fn test_mfg_and_presr_ini_updates() {
-        let temp_dir = std::env::temp_dir().join(format!("dlss5_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _ = fs::create_dir_all(&temp_dir);
-
-        // Test MFG update
-        update_mfg_ini(&temp_dir, true, 3);
-        let reshade_content = fs::read_to_string(temp_dir.join("ReShade.ini")).unwrap();
-        assert!(reshade_content.contains("[RenoDX.MFGUnlock]"));
-        assert!(reshade_content.contains("ForceMultiplier=3"));
-
-        // Test Pre-SR update
-        let opti_path = temp_dir.join("OptiScaler.ini");
-        fs::write(&opti_path, "[DlssNr]\nRunBeforeSR=false\nPasses=1\n").unwrap();
-        update_presr_ini(&temp_dir, true, 2);
-        let opti_content = fs::read_to_string(&opti_path).unwrap();
-        assert!(opti_content.contains("RunBeforeSR=true"));
-        assert!(opti_content.contains("Passes=2"));
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-}

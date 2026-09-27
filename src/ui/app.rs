@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 
 use dioxus::prelude::*;
+use dioxus::desktop::tao::window::ResizeDirection;
 use dioxus::html::HasFileData;
 use base64::Engine;
 use crate::core::scan::{scan_game_directory, scan_library_root, discover_all_launchers, discover_drive_roots, dedupe_games, GameEntry};
@@ -48,7 +49,8 @@ pub enum AppStatus {
     AddedGame(String),
 }
 
-fn format_status(lang: &str, status: &AppStatus) -> String {
+#[doc(hidden)]
+pub fn format_status(lang: &str, status: &AppStatus) -> String {
     match status {
         AppStatus::Ready => crate::core::i18n::t(lang, "status_ready").to_string(),
         AppStatus::DownloadingComponents => crate::core::i18n::t(lang, "status_downloading_components").to_string(),
@@ -62,7 +64,8 @@ fn format_status(lang: &str, status: &AppStatus) -> String {
     }
 }
 
-fn clean_display_title(raw: &str) -> String {
+#[doc(hidden)]
+pub fn clean_display_title(raw: &str) -> String {
     if raw.contains('_') && (raw.contains('.') || raw.contains("__")) {
         let base = raw.split('_').next().unwrap_or(raw);
         let name_part = base.split('.').last().unwrap_or(base);
@@ -82,7 +85,8 @@ fn clean_display_title(raw: &str) -> String {
     raw.replace('_', " ").replace('-', " ")
 }
 
-fn resolve_game_title(row: &HistoryRow, games: &[GameEntry]) -> String {
+#[doc(hidden)]
+pub fn resolve_game_title(row: &HistoryRow, games: &[GameEntry]) -> String {
     if let Some(ref name) = row.game_name {
         if !name.trim().is_empty() {
             return name.clone();
@@ -128,7 +132,8 @@ fn resolve_game_title(row: &HistoryRow, games: &[GameEntry]) -> String {
     row.dir.clone()
 }
 
-fn resolve_module_meta(rel: &str) -> (&'static str, &'static str, &'static str, &'static str) {
+#[doc(hidden)]
+pub fn resolve_module_meta(rel: &str) -> (&'static str, &'static str, &'static str, &'static str) {
     let lower = rel.to_ascii_lowercase();
     let file_name = std::path::Path::new(rel)
         .file_name()
@@ -416,6 +421,8 @@ pub fn App() -> Element {
     let mut run_in_bg = use_signal(move || init_run_in_bg);
     let mut launch_at_startup = use_signal(|| crate::core::tray::is_startup_enabled());
     let mut lang_menu_open = use_signal(|| false);
+    let start_in_bp = std::env::args().any(|a| a == "--big-picture" || a == "--tv" || a == "-bp");
+    let mut big_picture_open = use_signal(move || start_in_bp);
 
     // Status bar state
     let mut status_text = use_signal(|| "Ready".to_string());
@@ -448,8 +455,16 @@ pub fn App() -> Element {
             crate::core::tray::trim_working_set();
         }
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-            if crate::core::tray::take_show_window_request() {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            if crate::core::tray::take_show_big_picture_request() {
+                crate::core::display::snap_window_to_streaming_display();
+                big_picture_open.set(true);
+                let win = dioxus::desktop::window();
+                win.set_visible(true);
+                win.set_minimized(false);
+                win.set_fullscreen(true);
+                win.set_focus();
+            } else if crate::core::tray::take_show_window_request() {
                 let win = dioxus::desktop::window();
                 win.set_visible(true);
                 win.set_minimized(false);
@@ -459,11 +474,11 @@ pub fn App() -> Element {
     });
 
     // Automated background component downloader
-    let mut component_download_status = use_signal(|| {
+    let mut component_download_progress = use_signal(|| {
         if crate::core::downloader::are_all_mandatory_components_cached() {
             None
         } else {
-            Some("Checking components...".to_string())
+            Some(crate::core::downloader::DownloadProgress::checking())
         }
     });
     let mut trigger_component_download = use_signal(|| 0usize);
@@ -481,31 +496,27 @@ pub fn App() -> Element {
                         if *status_state.read() != AppStatus::DownloadingComponents {
                             status_state.set(AppStatus::DownloadingComponents);
                         }
-                        let bytes_str = match prog.total_bytes {
-                            Some(total) => format!(" ({} / {})", crate::core::downloader::format_bytes(prog.downloaded_bytes), crate::core::downloader::format_bytes(total)),
-                            None => format!(" ({})", crate::core::downloader::format_bytes(prog.downloaded_bytes)),
-                        };
-                        component_download_status.set(Some(format!("{}{}", prog.message, bytes_str)));
+                        component_download_progress.set(Some(prog));
                     } else {
-                        component_download_status.set(None);
+                        component_download_progress.set(None);
                     }
                 }).await;
 
                 is_downloading_components.set(false);
                 if crate::core::downloader::are_all_mandatory_components_cached() {
                     status_percent.set(100.0);
-                    component_download_status.set(None);
+                    component_download_progress.set(None);
                     status_state.set(AppStatus::Ready);
                 } else {
                     let err = res.err().unwrap_or_default();
                     status_percent.set(0.0);
-                    component_download_status.set(Some(crate::core::i18n::t(&current_lang.read(), "status_download_failed").to_string()));
+                    component_download_progress.set(None);
                     status_state.set(AppStatus::DownloadFailed(err));
                 }
             } else {
                 is_downloading_components.set(false);
                 status_percent.set(100.0);
-                component_download_status.set(None);
+                component_download_progress.set(None);
                 status_state.set(AppStatus::Ready);
             }
         }
@@ -565,6 +576,10 @@ pub fn App() -> Element {
     let mut group_games_by_store = use_signal(move || init_group);
     let mut auto_scan_drives = use_signal(move || init_auto_scan);
     let mut managed_folders = use_signal(move || init_folders);
+    let init_vibepollo_auto_add = init_state.vibepollo_auto_add;
+    let vibepollo_detected = use_signal(|| crate::core::vibepollo::is_vibepollo_installed());
+    let mut vibepollo_auto_add = use_signal(move || init_vibepollo_auto_add);
+    let mut vibepollo_updating = use_signal(|| false);
 
     // Activity log for Home view
     let mut activity_log = use_signal(get_session_log);
@@ -681,6 +696,13 @@ pub fn App() -> Element {
                 if !missing.is_empty() {
                     trigger_artwork_resolution(games, missing);
                 }
+
+                // Automatic sweep of unreferenced / orphaned artwork
+                let s_art = load_state();
+                let stats = crate::core::steamart::cleanup_unused_art(&fresh, &s_art.hidden, &s_art.posters);
+                if stats.files_removed > 0 {
+                    log_message(&format!("Cleaned {} orphaned art files (reclaimed {} KB)", stats.files_removed, stats.bytes_reclaimed / 1024));
+                }
             }
 
             let g_count = fresh.len();
@@ -796,14 +818,10 @@ pub fn App() -> Element {
             true
         }).collect();
 
-        let mut so = vec![
-            "Steam".to_string(),
-            "Xbox".to_string(),
-            "Epic Games".to_string(),
-            "GOG".to_string(),
-            "Added by hand".to_string(),
-            "My folders".to_string(),
-        ];
+        let mut so = crate::core::scan::DEFAULT_STORE_ORDER
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
         for (_, g) in &vg {
             if !so.contains(&g.launcher) && !g.launcher.is_empty() {
                 so.push(g.launcher.clone());
@@ -822,6 +840,67 @@ pub fn App() -> Element {
                     lang_menu_open.set(false);
                 }
             },
+
+            // ---------------- 8-ZONE PERIMETER WINDOW RESIZE HANDLES ----------------
+            if !*big_picture_open.read() {
+                div {
+                    class: "win-resize-handle win-resize-top",
+                    onmousedown: move |e| {
+                        e.stop_propagation();
+                        let _ = dioxus::desktop::window().drag_resize_window(ResizeDirection::North);
+                    },
+                }
+                div {
+                    class: "win-resize-handle win-resize-bottom",
+                    onmousedown: move |e| {
+                        e.stop_propagation();
+                        let _ = dioxus::desktop::window().drag_resize_window(ResizeDirection::South);
+                    },
+                }
+                div {
+                    class: "win-resize-handle win-resize-left",
+                    onmousedown: move |e| {
+                        e.stop_propagation();
+                        let _ = dioxus::desktop::window().drag_resize_window(ResizeDirection::West);
+                    },
+                }
+                div {
+                    class: "win-resize-handle win-resize-right",
+                    onmousedown: move |e| {
+                        e.stop_propagation();
+                        let _ = dioxus::desktop::window().drag_resize_window(ResizeDirection::East);
+                    },
+                }
+                div {
+                    class: "win-resize-handle win-resize-top-left",
+                    onmousedown: move |e| {
+                        e.stop_propagation();
+                        let _ = dioxus::desktop::window().drag_resize_window(ResizeDirection::NorthWest);
+                    },
+                }
+                div {
+                    class: "win-resize-handle win-resize-top-right",
+                    onmousedown: move |e| {
+                        e.stop_propagation();
+                        let _ = dioxus::desktop::window().drag_resize_window(ResizeDirection::NorthEast);
+                    },
+                }
+                div {
+                    class: "win-resize-handle win-resize-bottom-left",
+                    onmousedown: move |e| {
+                        e.stop_propagation();
+                        let _ = dioxus::desktop::window().drag_resize_window(ResizeDirection::SouthWest);
+                    },
+                }
+                div {
+                    class: "win-resize-handle win-resize-bottom-right",
+                    onmousedown: move |e| {
+                        e.stop_propagation();
+                        let _ = dioxus::desktop::window().drag_resize_window(ResizeDirection::SouthEast);
+                    },
+                }
+            }
+
             // ---------------- SIDEBAR ----------------
             aside {
                 class: "sidebar",
@@ -936,8 +1015,8 @@ pub fn App() -> Element {
                     p {
                         class: "status-sub",
                         if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
-                            if let Some(ref msg) = *component_download_status.read() {
-                                "{msg}"
+                            if let Some(ref prog) = *component_download_progress.read() {
+                                "{crate::core::downloader::format_download_progress(&current_lang.read(), prog)}"
                             } else {
                                 "{status_percent.read():.0}%"
                             }
@@ -1030,6 +1109,19 @@ pub fn App() -> Element {
                                 }
                             }
                         }
+                    }
+                    button {
+                        class: "win",
+                        id: "winBigPicture",
+                        title: "Big Picture Mode (Gamepad & TV)",
+                        onmousedown: move |e| e.stop_propagation(),
+                        onclick: move |e| {
+                            e.stop_propagation();
+                            crate::core::display::snap_window_to_streaming_display();
+                            dioxus::desktop::window().set_fullscreen(true);
+                            big_picture_open.set(true);
+                        },
+                        dangerous_inner_html: r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 12h4m-2-2v4m9-2h.01m3 0h.01"/></svg>"#
                     }
                     button {
                         class: "win",
@@ -1310,7 +1402,7 @@ pub fn App() -> Element {
                                 button {
                                     class: "ghost sm",
                                     id: "openLogFile",
-                                    title: "{crate::core::i18n::t(&current_lang.read(), \"tooltip_open_logfile\")}",
+                                    title: "{crate::core::i18n::t(&current_lang.read(), \"tooltip_open_desktop_log\")}",
                                     onclick: move |_| {
                                         let path = crate::core::logger::get_log_file_path();
                                         let mut cmd = std::process::Command::new("explorer");
@@ -1320,9 +1412,29 @@ pub fn App() -> Element {
                                             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
                                         }
                                         let _ = cmd.arg(&path).spawn();
-                                        crate::core::logger::info("ui", &format!("Opened log file: {}", path.display()));
+                                        crate::core::logger::info("ui", &format!("Opened desktop log file: {}", path.display()));
                                     },
-                                    "{crate::core::i18n::t(&current_lang.read(), \"btn_open_log\")}"
+                                    "{crate::core::i18n::t(&current_lang.read(), \"btn_open_desktop_log\")}"
+                                }
+                                button {
+                                    class: "ghost sm",
+                                    id: "openBpLogFile",
+                                    title: "{crate::core::i18n::t(&current_lang.read(), \"tooltip_open_bp_log\")}",
+                                    onclick: move |_| {
+                                        let path = crate::big_picture::logger::get_bp_log_path();
+                                        if !path.exists() {
+                                            crate::big_picture::logger::info("ui", "Big Picture log initialized");
+                                        }
+                                        let mut cmd = std::process::Command::new("explorer");
+                                        #[cfg(windows)]
+                                        {
+                                            use std::os::windows::process::CommandExt;
+                                            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                                        }
+                                        let _ = cmd.arg(&path).spawn();
+                                        crate::core::logger::info("ui", &format!("Opened Big Picture log file: {}", path.display()));
+                                    },
+                                    "{crate::core::i18n::t(&current_lang.read(), \"btn_open_bp_log\")}"
                                 }
                                 button {
                                     class: "ghost sm",
@@ -1490,6 +1602,13 @@ pub fn App() -> Element {
                                                 .collect();
                                             if !missing.is_empty() {
                                                 trigger_artwork_resolution(games, missing);
+                                            }
+
+                                            // Automatic sweep of unreferenced / orphaned artwork
+                                            let s_art = load_state();
+                                            let stats = crate::core::steamart::cleanup_unused_art(&deduped, &s_art.hidden, &s_art.posters);
+                                            if stats.files_removed > 0 {
+                                                log_message(&format!("Cleaned {} orphaned art files (reclaimed {} KB)", stats.files_removed, stats.bytes_reclaimed / 1024));
                                             }
                                         });
                                     },
@@ -1906,10 +2025,10 @@ pub fn App() -> Element {
                             }
                         }
                         p { class: "hint", "{crate::core::i18n::t(&current_lang.read(), \"addons_hint\")}" }
-                        if let Some(ref status_msg) = *component_download_status.read() {
+                        if let Some(ref prog) = *component_download_progress.read() {
                             div { style: "margin-bottom: 16px; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; border: 1px solid rgba(249, 115, 22, 0.4); border-radius: 8px; background: rgba(249, 115, 22, 0.12);",
                                 div { style: "display: flex; justify-content: space-between; align-items: center;",
-                                    div { style: "font-size: 0.88rem; color: var(--text-primary); font-weight: 500;", "⚡ {status_msg}" }
+                                    div { style: "font-size: 0.88rem; color: var(--text-primary); font-weight: 500;", "⚡ {crate::core::downloader::format_download_progress(&current_lang.read(), prog)}" }
                                     if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
                                         div { style: "font-size: 0.82rem; color: var(--accent); font-weight: 600;", "{status_percent.read():.0}%" }
                                     }
@@ -1967,7 +2086,52 @@ pub fn App() -> Element {
                                 }
                             }
 
-                            // 2. Mandatory Core: RenoDX 4x MFG Unlock v0.9
+                            // 2. NIGos DLSS 5 D3D12 Mip Fix v2.6.1
+                            div { class: if crate::core::downloader::is_dlss5_d3d12_fix_cached() { "addon on" } else { "addon" },
+                                div { class: "mark",
+                                    if crate::core::downloader::is_dlss5_d3d12_fix_cached() {
+                                        svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
+                                            path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
+                                        }
+                                    }
+                                }
+                                div { class: "body",
+                                    div { class: "t",
+                                        "DLSS Studio D3D12 Mip Companion"
+                                        span { class: "tag accent", "v1.0.0" }
+                                    }
+                                    div { class: "d", "dlss-mip-fix.addon64 · Pure Rust Add-on · 147 KB" }
+                                    div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                        "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} {crate::core::downloader::DLSS_MIP_FIX_URL}"
+                                    }
+                                    div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
+                                        "{crate::core::i18n::t(&current_lang.read(), \"addon_dlss5_d3d12_fix_desc\")}"
+                                    }
+                                }
+                                div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
+                                    if crate::core::downloader::is_dlss5_d3d12_fix_cached() {
+                                        span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
+                                            "✓ {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
+                                        }
+                                    } else {
+                                        button {
+                                            class: "tag warn",
+                                            style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
+                                            title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
+                                            onclick: move |_| {
+                                                *trigger_component_download.write() += 1;
+                                            },
+                                            if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
+                                                "{status_percent.read():.0}% ..."
+                                            } else {
+                                                "⚡ {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 3. Mandatory Core: RenoDX 4x MFG Unlock v1.0
                             div { class: if crate::core::downloader::is_mfg_addon_cached() { "addon on" } else { "addon" },
                                 div { class: "mark",
                                     if crate::core::downloader::is_mfg_addon_cached() {
@@ -2659,6 +2823,150 @@ pub fn App() -> Element {
                                 }
                             }
 
+                            // Auto-add to Vibepollo / Apollo
+                            {
+                                let is_vibe_detected = *vibepollo_detected.read();
+                                let is_updating = *vibepollo_updating.read();
+                                let row_style: &'static str = if is_vibe_detected {
+                                    "display:flex; justify-content:space-between; align-items:center; padding:12px 0; border-bottom:1px solid var(--line);"
+                                } else {
+                                    "display:flex; justify-content:space-between; align-items:center; padding:12px 0; border-bottom:1px solid var(--line); opacity:0.55;"
+                                };
+                                let btn_style: &'static str = if !is_vibe_detected {
+                                    "cursor: not-allowed;"
+                                } else if is_updating {
+                                    "cursor: wait; opacity: 0.6;"
+                                } else {
+                                    ""
+                                };
+                                let is_disabled = !is_vibe_detected || is_updating;
+                                let is_checked = if *vibepollo_auto_add.read() { "true" } else { "false" };
+                                let vibe_status_tag = if is_vibe_detected {
+                                    crate::core::i18n::t(&current_lang.read(), "settings_vibepollo_detected")
+                                } else {
+                                    crate::core::i18n::t(&current_lang.read(), "settings_vibepollo_not_detected")
+                                };
+                                let is_uac_target = if let Some(p) = crate::core::vibepollo::get_vibepollo_apps_path() {
+                                    crate::core::state::is_path_protected(&p)
+                                } else {
+                                    true
+                                };
+                                rsx! {
+                                    div {
+                                        class: "set-row",
+                                        style: "{row_style}",
+                                        div {
+                                            div {
+                                                class: "k",
+                                                style: "font-weight:600; display:flex; align-items:center; gap:8px;",
+                                                span { "{crate::core::i18n::t(&current_lang.read(), \"settings_vibepollo_label\")}" }
+                                                span {
+                                                    class: if is_vibe_detected { "badge-tag ok" } else { "badge-tag dim" },
+                                                    "{vibe_status_tag}"
+                                                }
+                                                if is_vibe_detected && is_uac_target {
+                                                    span {
+                                                        class: "badge-tag warn",
+                                                        "🛡️ {crate::core::i18n::t(&current_lang.read(), \"settings_vibe_badge_uac\")}"
+                                                    }
+                                                }
+                                            }
+                                            div { class: "v", style: "font-size:0.85em; color:var(--dim);", "{crate::core::i18n::t(&current_lang.read(), \"settings_vibepollo_desc\")}" }
+                                        }
+                                        button {
+                                            class: "setting-switch",
+                                            id: "setVibepollo",
+                                            type: "button",
+                                            role: "switch",
+                                            disabled: is_disabled,
+                                            style: "{btn_style}",
+                                            "aria-checked": is_checked,
+                                            onclick: move |_| {
+                                                if !is_vibe_detected || *vibepollo_updating.read() { return; }
+                                                let next = !*vibepollo_auto_add.read();
+                                                vibepollo_updating.set(true);
+
+                                                spawn(async move {
+                                                    let res = tokio::task::spawn_blocking(move || {
+                                                        if next {
+                                                            crate::core::vibepollo::register_app()
+                                                        } else {
+                                                            crate::core::vibepollo::unregister_app()
+                                                        }
+                                                    }).await;
+
+                                                    vibepollo_updating.set(false);
+
+                                                    match res {
+                                                        Ok(Ok(())) => {
+                                                            vibepollo_auto_add.set(next);
+                                                            let mut s = load_state();
+                                                            s.vibepollo_auto_add = next;
+                                                            let _ = save_state(&s);
+                                                            let key = if next { "toast_vibepollo_added" } else { "toast_vibepollo_removed" };
+                                                            copy_toast_text.set(crate::core::i18n::t(&current_lang.read(), key).to_string());
+                                                            *toast_generation.write() += 1;
+                                                            copy_toast.set(true);
+                                                        }
+                                                        _ => {
+                                                            if next {
+                                                                vibepollo_auto_add.set(false);
+                                                            }
+                                                            copy_toast_text.set(crate::core::i18n::t(&current_lang.read(), "toast_vibepollo_uac_cancelled").to_string());
+                                                            *toast_generation.write() += 1;
+                                                            copy_toast.set(true);
+                                                        }
+                                                    }
+                                                });
+                                            },
+                                            span { class: "knob" }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Storage & Cache Cleanup
+                            {
+                                let cache_size = crate::core::steamart::get_art_cache_size();
+                                let size_str = if cache_size >= 1024 * 1024 {
+                                    format!("{:.1} MB", cache_size as f64 / (1024.0 * 1024.0))
+                                } else {
+                                    format!("{} KB", cache_size / 1024)
+                                };
+                                rsx! {
+                                    div { class: "set-row", style: "display:flex; justify-content:space-between; align-items:center; padding:12px 0; border-bottom:1px solid var(--line);",
+                                        div {
+                                            div { class: "k", style: "font-weight:600; display:flex; align-items:center; gap:8px;",
+                                                span { "{crate::core::i18n::t(&current_lang.read(), \"settings_storage_cache\")}" }
+                                                span { class: "badge-tag dim", "{size_str}" }
+                                            }
+                                            div { class: "v", style: "font-size:0.85em; color:var(--dim);", "{crate::core::i18n::t(&current_lang.read(), \"settings_storage_cache_desc\")}" }
+                                        }
+                                        button {
+                                            class: "ghost sm",
+                                            id: "cleanArtCache",
+                                            title: "{crate::core::i18n::t(&current_lang.read(), \"settings_clean_art_cache\")}",
+                                            onclick: move |_| {
+                                                let g_list = games.read().clone();
+                                                let s = load_state();
+                                                let stats = crate::core::steamart::cleanup_unused_art(&g_list, &s.hidden, &s.posters);
+                                                let reclaimed_mb = stats.bytes_reclaimed as f64 / (1024.0 * 1024.0);
+                                                let toast = if stats.files_removed > 0 {
+                                                    format!("Cleaned {} orphaned art files ({:.2} MB reclaimed)", stats.files_removed, reclaimed_mb)
+                                                } else {
+                                                    "Artwork cache is already clean (0 orphaned files)".to_string()
+                                                };
+                                                copy_toast_text.set(toast);
+                                                *toast_generation.write() += 1;
+                                                copy_toast.set(true);
+                                            },
+                                            span { "🧹 " }
+                                            "{crate::core::i18n::t(&current_lang.read(), \"settings_clean_art_btn\")}"
+                                        }
+                                    }
+                                }
+                            }
+
                             // Managed folders list
                             div { class: "set-row", style: "padding:12px 0; border-bottom:1px solid var(--line);",
                                 div { style: "display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;",
@@ -2895,23 +3203,12 @@ pub fn App() -> Element {
                                 games.set(current_games);
                             }
                         }
-                        let is_mod_added_dlss = if let Some(manifest) = crate::core::journal::read_manifest(&target_game.dir) {
-                            manifest.added.iter().any(|a| {
-                                let lower = a.to_lowercase();
-                                lower.ends_with("nvngx_dlss.dll") || lower.ends_with("_nvngx.dll") || lower.ends_with("nvngx.dll")
-                            })
-                        } else {
-                            false
-                        };
-                        let has_native_dlss = (target_game.dlss_version.is_some() || target_game.files.iter().any(|f| {
-                            let lower = f.rel.to_lowercase();
-                            lower.ends_with("nvngx_dlss.dll") || lower.ends_with("_nvngx.dll") || lower.ends_with("nvngx.dll")
-                        })) && !is_mod_added_dlss;
+                        let has_native_dlss = target_game.has_native_dlss();
                         let api_lower = target_game.api.to_lowercase();
-                        let is_dx11 = api_lower.contains("11") || api_lower == "d3d11";
+                        let is_dx12 = api_lower.contains("12") || api_lower.contains("d3d12");
                         let is_vulkan = api_lower.contains("vulkan");
-                        let is_dx12 = api_lower.contains("12") || api_lower == "d3d12";
-                        target_game.can_inject_fg = target_game.bitness == 64 && has_native_dlss && !target_game.has_frame_generation && is_vulkan;
+                        let is_dx11 = (api_lower.contains("11") || api_lower == "d3d11") && !is_dx12;
+                        target_game.can_inject_fg = target_game.bitness == 64 && has_native_dlss && !target_game.has_frame_generation && (is_dx12 || is_vulkan);
                         let opti_advisory = crate::core::install_routes::get_optiscaler_advisory(&target_game);
                         let native_advisory = crate::core::install_routes::get_native_dlss_advisory(&target_game);
                         let mfg_advisory = crate::core::install_routes::get_mfg_advisory(&target_game, primary_gpu.is_rtx_40);
@@ -3163,20 +3460,10 @@ pub fn App() -> Element {
                                                                     if current_games[pos].available_exes.is_empty() {
                                                                         current_games[pos].available_exes = exes.clone();
                                                                     }
-                                                                    let is_mod_added_dlss = if let Some(manifest) = crate::core::journal::read_manifest(&current_games[pos].dir) {
-                                                                        manifest.added.iter().any(|a| {
-                                                                            let lower = a.to_lowercase();
-                                                                            lower.ends_with("nvngx_dlss.dll") || lower.ends_with("_nvngx.dll") || lower.ends_with("nvngx.dll")
-                                                                        })
-                                                                    } else {
-                                                                        false
-                                                                    };
-                                                                    let has_native_dlss = (current_games[pos].dlss_version.is_some() || current_games[pos].files.iter().any(|f| {
-                                                                        let lower = f.rel.to_lowercase();
-                                                                        lower.ends_with("nvngx_dlss.dll") || lower.ends_with("_nvngx.dll") || lower.ends_with("nvngx.dll")
-                                                                    })) && !is_mod_added_dlss;
-                                                                    let is_vulkan_opt = opt.api.to_lowercase().contains("vulkan");
-                                                                    current_games[pos].can_inject_fg = opt.bitness == 64 && has_native_dlss && !current_games[pos].has_frame_generation && is_vulkan_opt;
+                                                                    let api_lower_opt = opt.api.to_lowercase();
+                                                                    let is_dx12_opt = api_lower_opt.contains("12") || api_lower_opt.contains("d3d12");
+                                                                    let is_vulkan_opt = api_lower_opt.contains("vulkan");
+                                                                    current_games[pos].can_inject_fg = opt.bitness == 64 && has_native_dlss && !current_games[pos].has_frame_generation && (is_dx12_opt || is_vulkan_opt);
 
                                                                     // Only auto-adjust route on exe switch if no deploys have been made at all (unpatched)
                                                                     let is_deployed = current_games[pos].installed_route.is_some()
@@ -3334,15 +3621,15 @@ pub fn App() -> Element {
                                 for adv in &active_advisories {
                                     div {
                                         class: "emu-note incompatibility-warning",
-                                        b { "🚨 High Incompatibility Warning: {adv.title}" }
-                                        p { class: "advisory-intro", "This route may fail to initialize, cause graphics rendering artifacts, or crash the game due to technical restrictions:" }
+                                        b { "{crate::core::i18n::t_param(&current_lang.read(), \"advisory_warning_high\", &adv.title)}" }
+                                        p { class: "advisory-intro", "{crate::core::i18n::t(&current_lang.read(), \"advisory_intro_restrictions\")}" }
                                         ul { class: "advisory-reasons",
                                             for reason in &adv.reasons {
-                                                li { "{reason}" }
+                                                li { "{crate::core::i18n::translate_advisory_reason(&current_lang.read(), reason)}" }
                                             }
                                         }
                                         div { class: "advisory-footer",
-                                            span { "{adv.recommendation}" }
+                                            span { "{crate::core::i18n::translate_advisory_recommendation(&current_lang.read(), &adv.recommendation)}" }
                                         }
                                     }
                                 }
@@ -3434,7 +3721,7 @@ pub fn App() -> Element {
                                                             style: "cursor: pointer;",
                                                             span { "{crate::core::i18n::t(&current_lang.read(), \"feature_mfg_title\")}" }
                                                             if mfg_advisory.is_some() {
-                                                                span { class: "tag advisory", "Advisory ⚠️" }
+                                                                span { class: "tag advisory", "{crate::core::i18n::t(&current_lang.read(), \"advisory_tag_warn\")}" }
                                                             } else {
                                                                 span { class: "tag warn", "{crate::core::i18n::t(&current_lang.read(), \"feature_mfg_tag\")}" }
                                                             }
@@ -4063,7 +4350,7 @@ pub fn App() -> Element {
                                                     let mut s = load_state();
                                                     s.overlay_hotkey = k.clone();
                                                     let _ = save_state(&s);
-                                                    crate::core::overlay_bridge::sync_overlay_preferences(&s);
+                                                    crate::core::state::sync_overlay_preferences(&s);
                                                     overlay_hotkey_open.set(false);
                                                 }
                                             },
@@ -4152,7 +4439,7 @@ pub fn App() -> Element {
                                     s.custom_overlay_themes = list;
                                     s.overlay_theme = new_id;
                                     let _ = save_state(&s);
-                                    crate::core::overlay_bridge::sync_overlay_preferences(&s);
+                                    crate::core::state::sync_overlay_preferences(&s);
                                     overlay_create_open.set(false);
                                 },
                                 "{crate::core::i18n::t(&current_lang.read(), \"btn_save_apply\")}"
@@ -4345,7 +4632,7 @@ pub fn App() -> Element {
                                             let mut s = load_state();
                                             s.overlay_theme = p_id_apply.clone();
                                             let _ = save_state(&s);
-                                            crate::core::overlay_bridge::sync_overlay_preferences(&s);
+                                            crate::core::state::sync_overlay_preferences(&s);
                                             overlay_preview_open.set(false);
                                         },
                                         "{crate::core::i18n::t(&current_lang.read(), \"btn_apply_theme\")}"
@@ -4365,6 +4652,17 @@ pub fn App() -> Element {
                     title: "{crate::core::i18n::t(&current_lang.read(), \"tooltip_dismiss\")}",
                     onclick: move |_| copy_toast.set(false),
                     "{copy_toast_text}"
+                }
+            }
+
+            // Big Picture 10-Foot TV & Gamepad Overlay
+            if *big_picture_open.read() {
+                crate::big_picture::BigPictureOverlay {
+                    games: games,
+                    is_open: big_picture_open,
+                    rust_theme: rust_theme,
+                    theme: theme,
+                    lang: current_lang,
                 }
             }
         }
@@ -4416,7 +4714,7 @@ pub fn pick_and_set_cover(dir: &std::path::Path, mut games: Signal<Vec<GameEntry
                 let _ = std::fs::create_dir_all(&art_dir);
                 let key = crate::core::steamart::key_for_dir(&dir);
                 let cover_file = art_dir.join(format!("{}-cover.jpg", key));
-                let _ = std::fs::write(&cover_file, &bytes);
+                let _ = crate::core::steamart::optimize_and_save_cover_bytes(&bytes, &cover_file);
                 let uri = format!("http://dlss-art.localhost/art/{}-cover.jpg", key);
 
                 // Update games signal so UI refreshes immediately
@@ -4441,221 +4739,3 @@ pub fn pick_and_set_cover(dir: &std::path::Path, mut games: Signal<Vec<GameEntry
         }
     });
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_clean_display_title_formats() {
-        assert_eq!(clean_display_title("Cyberpunk_2077"), "Cyberpunk 2077");
-        assert_eq!(clean_display_title("The-Witcher-3"), "The Witcher 3");
-        assert_eq!(clean_display_title("Package.Name.GameTitle_1.0_x64"), "Game Title");
-        assert_eq!(clean_display_title("Microsoft.FlightSimulator_1.37.19.0_x64__8wekyb3d8bbwe"), "Flight Simulator");
-        assert_eq!(clean_display_title("SimpleTitle"), "SimpleTitle");
-    }
-
-    #[test]
-    fn test_resolve_game_title_logic() {
-        let games = vec![
-            GameEntry {
-                name: "Baldur's Gate 3".to_string(),
-                dir: std::path::PathBuf::from("C:\\Games\\Baldurs Gate 3"),
-                ..Default::default()
-            }
-        ];
-
-        let row1 = HistoryRow {
-            game_name: Some("Direct Name".to_string()),
-            dir: "C:\\Games\\Unknown".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(resolve_game_title(&row1, &games), "Direct Name");
-
-        let row2 = HistoryRow {
-            game_name: None,
-            dir: "C:\\Games\\Baldurs Gate 3".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(resolve_game_title(&row2, &games), "Baldur's Gate 3");
-
-        let row3 = HistoryRow {
-            game_name: None,
-            dir: "C:\\Games\\Starfield\\Content".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(resolve_game_title(&row3, &[]), "Starfield");
-
-        let row4 = HistoryRow {
-            game_name: None,
-            dir: "C:\\Games\\Cyberpunk\\Binaries\\Win64".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(resolve_game_title(&row4, &[]), "Cyberpunk");
-    }
-
-    #[test]
-    fn test_app_virtual_dom_headless_render() {
-        let mut dom = VirtualDom::new(App);
-        dom.rebuild_in_place();
-    }
-
-    #[test]
-    fn test_app_virtual_dom_all_views_and_modals() {
-        let _state_lock = crate::core::state::STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let mut s = load_state();
-        let old_games = s.cached_games.clone();
-        s.cached_games = vec![
-            GameEntry {
-                name: "Cyberpunk 2077".to_string(),
-                dir: std::path::PathBuf::from("C:\\Games\\Cyberpunk 2077"),
-                exe_path: std::path::PathBuf::from("C:\\Games\\Cyberpunk 2077\\bin\\x64\\Cyberpunk2077.exe"),
-                launcher: "Steam".to_string(),
-                bitness: 64,
-                api: "DirectX 12".to_string(),
-                dlss_version: Some("3.7.0.0".to_string()),
-                has_frame_generation: true,
-                can_inject_fg: false,
-                ..Default::default()
-            },
-            GameEntry {
-                name: "Baldur's Gate 3".to_string(),
-                dir: std::path::PathBuf::from("C:\\Games\\Baldurs Gate 3"),
-                exe_path: std::path::PathBuf::from("C:\\Games\\Baldurs Gate 3\\bin\\bg3_dx11.exe"),
-                launcher: "GOG".to_string(),
-                bitness: 64,
-                api: "DirectX 11".to_string(),
-                dlss_version: Some("2.4.2.0".to_string()),
-                has_frame_generation: false,
-                can_inject_fg: true,
-                ..Default::default()
-            },
-        ];
-        let _ = save_state(&s);
-
-        // 1. Home view
-        std::env::set_var("DLSS_TEST_VIEW", "home");
-        let mut dom_home = VirtualDom::new(App);
-        dom_home.rebuild_in_place();
-
-        // 2. Games library view
-        std::env::set_var("DLSS_TEST_VIEW", "games");
-        let mut dom_games = VirtualDom::new(App);
-        dom_games.rebuild_in_place();
-
-        // 3. Add-ons view
-        std::env::set_var("DLSS_TEST_VIEW", "addons");
-        let mut dom_addons = VirtualDom::new(App);
-        dom_addons.rebuild_in_place();
-
-        // 4. History view
-        std::env::set_var("DLSS_TEST_VIEW", "history");
-        let mut dom_hist = VirtualDom::new(App);
-        dom_hist.rebuild_in_place();
-
-        // 5. Settings view
-        std::env::set_var("DLSS_TEST_VIEW", "settings");
-        let mut dom_sett = VirtualDom::new(App);
-        dom_sett.rebuild_in_place();
-
-        // 6. About view
-        std::env::set_var("DLSS_TEST_VIEW", "about");
-        let mut dom_about = VirtualDom::new(App);
-        dom_about.rebuild_in_place();
-
-        // 7. Game detail sheet modal
-        std::env::set_var("DLSS_TEST_VIEW", "games");
-        std::env::set_var("DLSS_TEST_SHEET", "1");
-        let mut dom_sheet = VirtualDom::new(App);
-        dom_sheet.rebuild_in_place();
-        std::env::remove_var("DLSS_TEST_SHEET");
-
-        // 8. RenoDX Overlay preview modal
-        std::env::set_var("DLSS_TEST_PREVIEW", "1");
-        let mut dom_prev = VirtualDom::new(App);
-        dom_prev.rebuild_in_place();
-        std::env::remove_var("DLSS_TEST_PREVIEW");
-
-        // 9. Hotkey modal
-        std::env::set_var("DLSS_TEST_HOTKEY", "1");
-        let mut dom_hk = VirtualDom::new(App);
-        dom_hk.rebuild_in_place();
-        std::env::remove_var("DLSS_TEST_HOTKEY");
-
-        // Clean up env and restore state
-        std::env::remove_var("DLSS_TEST_VIEW");
-        s.cached_games = old_games;
-        let _ = save_state(&s);
-    }
-
-    #[test]
-    fn test_format_status_found_games() {
-        assert_eq!(format_status("en", &AppStatus::FoundGames(8)), "Found 8 games across sources");
-        assert_eq!(format_status("de", &AppStatus::FoundGames(12)), "12 Spiele plattformübergreifend gefunden");
-        assert_eq!(format_status("zh", &AppStatus::FoundGames(5)), "共发现 5 款已安装游戏");
-        assert_eq!(format_status("en", &AppStatus::NoGamesFound("Documents".to_string())), "No supported game executables found in Documents");
-        assert_eq!(format_status("de", &AppStatus::NoGamesFound("Downloads".to_string())), "Keine unterstützten Spieldateien in Downloads gefunden");
-        assert_eq!(format_status("en", &AppStatus::AddedGame("Cyberpunk 2077".to_string())), "Added Cyberpunk 2077");
-        assert_eq!(format_status("de", &AppStatus::AddedGame("Cyberpunk 2077".to_string())), "Cyberpunk 2077 hinzugefügt");
-    }
-
-    #[test]
-    fn test_recommended_route_auto_selection_across_apis() {
-        use crate::core::install_routes::{recommended_route, InstallRoute};
-
-        // 1. DirectX 11 title without native DLSS-G -> must auto-select Feeder (compatible, no warnings)
-        let dx11_game = GameEntry {
-            name: "Baldur's Gate 3 DX11".to_string(),
-            api: "DirectX 11".to_string(),
-            bitness: 64,
-            dlss_version: Some("2.4.2.0".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(recommended_route(&dx11_game), InstallRoute::Feeder);
-
-        // 2. 64-bit DirectX 12 title with DLSS -> auto-selects Native DLSS
-        let dx12_game = GameEntry {
-            name: "Cyberpunk 2077".to_string(),
-            api: "DirectX 12".to_string(),
-            bitness: 64,
-            dlss_version: Some("3.7.0.0".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(recommended_route(&dx12_game), InstallRoute::Native);
-
-        // 3. Vulkan title -> must auto-select Feeder
-        let vulkan_game = GameEntry {
-            name: "Doom Eternal".to_string(),
-            api: "Vulkan".to_string(),
-            bitness: 64,
-            dlss_version: Some("3.1.1.0".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(recommended_route(&vulkan_game), InstallRoute::Feeder);
-
-        // 4. Legacy DirectX 9 title (e.g. Mass Effect 2) -> must auto-select Feeder
-        let dx9_game = GameEntry {
-            name: "Mass Effect 2".to_string(),
-            api: "DirectX 9".to_string(),
-            bitness: 32,
-            ..Default::default()
-        };
-        assert_eq!(recommended_route(&dx9_game), InstallRoute::Feeder);
-    }
-
-    #[test]
-    fn test_resolve_module_meta() {
-        assert_eq!(resolve_module_meta("nvngx_dlss.dll"), ("module_dlss_sr", "NVIDIA", "vendor-nvidia", "DLSS"));
-        assert_eq!(resolve_module_meta("bin\\x64\\nvngx_dlssg.dll"), ("module_dlss_fg", "NVIDIA", "vendor-nvidia", "DLSS-G"));
-        assert_eq!(resolve_module_meta("nvngx_dlssd.dll"), ("module_dlss_rr", "NVIDIA", "vendor-nvidia", "DLSS-RR"));
-        assert_eq!(resolve_module_meta("amd_fidelityfx_framegeneration_dx12.dll"), ("module_fsr_fg", "AMD", "vendor-amd", "FSR FG"));
-        assert_eq!(resolve_module_meta("sl.dlss.dll"), ("module_sl_dlss", "Streamline", "vendor-sl", "SL DLSS"));
-        assert_eq!(resolve_module_meta("sl.dlss_g.dll"), ("module_sl_fg", "Streamline", "vendor-sl", "SL FG"));
-        assert_eq!(resolve_module_meta("sl.common.dll"), ("module_sl_core", "Streamline", "vendor-sl", "SL Core"));
-        assert_eq!(resolve_module_meta("sl.interposer.dll"), ("module_sl_core", "Streamline", "vendor-sl", "SL Core"));
-        assert_eq!(resolve_module_meta("sl.reflex.dll"), ("module_sl_reflex", "Streamline", "vendor-sl", "Reflex"));
-        assert_eq!(resolve_module_meta("optiscaler/dxgi.dll"), ("module_optiscaler", "OptiScaler", "vendor-opti", "OptiScaler"));
-        assert_eq!(resolve_module_meta("some_other.dll"), ("module_generic_dll", "Runtime", "vendor-generic", "DLL"));
-    }
-}
-

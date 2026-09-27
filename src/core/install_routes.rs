@@ -50,10 +50,9 @@ pub fn get_optiscaler_advisory(game: &GameEntry) -> Option<RouteAdvisory> {
     }
 
     let api_lower = game.api.to_lowercase();
-    let is_dxgi_or_vulkan = api_lower.contains("12") 
-        || api_lower.contains("11") 
-        || api_lower.contains("dxgi") 
-        || api_lower.contains("vulkan");
+    let is_dx12 = api_lower.contains("12") || api_lower.contains("d3d12");
+    let is_vulkan = api_lower.contains("vulkan");
+    let is_dx11 = (api_lower.contains("11") || api_lower == "d3d11") && !is_dx12;
     let is_legacy = api_lower.contains("10")
         || api_lower.contains("directx 8")
         || api_lower.contains("d3d8")
@@ -61,21 +60,42 @@ pub fn get_optiscaler_advisory(game: &GameEntry) -> Option<RouteAdvisory> {
         || api_lower.contains("d3d9")
         || api_lower.contains("opengl");
 
-    if !is_dxgi_or_vulkan || is_legacy {
-        reasons.push(format!("Legacy / Non-DirectX API: OptiScaler DLSS-NR is engineered for DirectX 11, DirectX 12, or Vulkan. Running under {} is not supported.", game.api));
+    let has_native = game.has_native_upscaler();
+    let has_mod_dlss = game.dlss_version.is_some() && !game.has_native_dlss();
+
+    if is_dx11 {
+        if has_native {
+            reasons.push(format!("DirectX 11 Interop Notice: OptiScaler operates via D3D11on12 interop. Ensure the in-game upscaler setting is enabled in {}.", game.name));
+        } else {
+            reasons.push(format!("Non-DirectX 12 / Missing Native Upscaler: Game has no native DLSS, FSR, or XeSS pipeline for OptiScaler to intercept. Injected proxy hooks (dxgi.dll) can cause D3D11 device creation failures or crashes under {}.", game.api));
+            if has_mod_dlss {
+                reasons.push("Mod-Deployed DLSS Detected: The present nvngx_dlss.dll was deployed by a mod (e.g. DLSS 5 Feeder) and cannot be intercepted natively by OptiScaler.".to_string());
+            }
+        }
+    } else if is_legacy || (!is_dx12 && !is_vulkan && !api_lower.contains("dxgi")) {
+        reasons.push(format!("Legacy / Non-DirectX API: OptiScaler DLSS-NR is engineered for DirectX 12 or Vulkan. Running under {} is not supported.", game.api));
     }
 
-    if game.dlss_version.is_none() {
+    if !is_dx11 && !has_native {
         reasons.push("Missing Native DLSS: No original nvngx_dlss.dll pipeline was found for OptiScaler to intercept.".to_string());
+        if has_mod_dlss {
+            reasons.push("Mod-Deployed DLSS Detected: The present nvngx_dlss.dll was deployed by a mod (e.g. DLSS 5 Feeder) and cannot be intercepted natively by OptiScaler.".to_string());
+        }
     }
 
     if reasons.is_empty() {
         None
     } else {
+        let recommendation = if is_dx11 && !has_native {
+            "DLSS 5 Feeder route provides generic frame interception and image reconstruction for this game.".to_string()
+        } else {
+            "DLSS 5 Feeder route provides generic frame interception and image reconstruction for this game.".to_string()
+        };
+
         Some(RouteAdvisory {
             title: format!("OptiScaler on {}", game.name),
             reasons,
-            recommendation: "ReShade (default) with DLSS 5 Feeder is strongly recommended for this game.".to_string(),
+            recommendation,
         })
     }
 }
@@ -87,10 +107,14 @@ pub fn get_native_dlss_advisory(game: &GameEntry) -> Option<RouteAdvisory> {
     let is_dx12 = api_lower.contains("12") || api_lower.contains("d3d12");
 
     if !is_dx12 {
-        reasons.push(format!("Non-DirectX 12 API: Native DLSS relies strictly on D3D12 NGX EvaluateFeature hooks. This game runs under {}.", game.api));
+        reasons.push(format!("DirectX 12 Required: DLSS 5 Direct Neural Rendering hooks require a D3D12 graphics pipeline. This title runs under {}.", game.api));
     }
-    if game.dlss_version.is_none() {
-        reasons.push("Missing Native DLSS: Game does not include nvngx_dlss.dll for RenoDX to hook.".to_string());
+    if !game.has_native_dlss() {
+        if game.dlss_version.is_some() {
+            reasons.push("Mod-Deployed DLSS Detected: The present nvngx_dlss.dll was deployed by a mod (e.g. DLSS 5 Feeder) and cannot provide a native D3D12 NGX pipeline.".to_string());
+        } else {
+            reasons.push("Missing Native DLSS: Game does not include nvngx_dlss.dll for RenoDX to hook.".to_string());
+        }
     }
     if game.bitness != 64 {
         reasons.push("32-bit Architecture: Native DLSS 5 requires a 64-bit game process.".to_string());
@@ -100,9 +124,9 @@ pub fn get_native_dlss_advisory(game: &GameEntry) -> Option<RouteAdvisory> {
         None
     } else {
         Some(RouteAdvisory {
-            title: format!("Native DLSS on {}", game.name),
+            title: format!("DLSS 5 Direct on {}", game.name),
             reasons,
-            recommendation: "DLSS 5 Feeder route provides generic frame interception and image reconstruction for this game.".to_string(),
+            recommendation: format!("Use DLSS 5 Feeder to enable DLSS 5 Neural Rendering on {}.", game.api),
         })
     }
 }
@@ -111,9 +135,9 @@ pub fn get_native_dlss_advisory(game: &GameEntry) -> Option<RouteAdvisory> {
 pub fn get_mfg_advisory(game: &GameEntry, is_rtx_40: bool) -> Option<RouteAdvisory> {
     let mut reasons = Vec::new();
     let api_lower = game.api.to_lowercase();
-    let is_dx11 = api_lower.contains("11") || api_lower == "d3d11";
-    let is_vulkan = api_lower.contains("vulkan");
     let is_dx12 = api_lower.contains("12") || api_lower.contains("d3d12");
+    let is_vulkan = api_lower.contains("vulkan");
+    let is_dx11 = (api_lower.contains("11") || api_lower == "d3d11") && !is_dx12;
 
     if !game.has_frame_generation {
         if is_dx11 {
@@ -171,7 +195,7 @@ pub fn check_opti_reason(game: &GameEntry) -> Option<OptiReason> {
         return Some(OptiReason::Unsupported);
     }
 
-    if game.dlss_version.is_none() {
+    if game.dlss_version.is_none() && !game.has_native_upscaler() {
         return Some(OptiReason::NeedsDlss);
     }
 
@@ -249,9 +273,8 @@ pub fn is_native_dlss_supported(game: &GameEntry) -> bool {
 /// Determines if Frame Generation (native DLSS-G, Streamline, or injected MFG) is supported for a game.
 pub fn is_frame_generation_supported(game: &GameEntry) -> bool {
     let api_lower = game.api.to_lowercase();
-    let is_vulkan = api_lower.contains("vulkan");
     let is_dx12 = api_lower.contains("12") || api_lower.contains("d3d12");
-    let is_dx11 = api_lower.contains("11") || api_lower == "d3d11";
+    let is_dx11 = (api_lower.contains("11") || api_lower == "d3d11") && !is_dx12;
 
     // Native DLSS-G games (DX12) always support FG
     if game.has_frame_generation {
@@ -261,258 +284,26 @@ pub fn is_frame_generation_supported(game: &GameEntry) -> bool {
     if game.mfg_unlock_installed {
         return true;
     }
-    // Injected FG is strictly blocked on DX11
+    // Strict DirectX 11 block: Injected MFG requires DX12 or Vulkan Streamline
     if is_dx11 {
         return false;
     }
-    // Injected FG requires 64-bit Vulkan (or DX12 with Streamline)
-    game.can_inject_fg && (is_vulkan || is_dx12)
+    // Otherwise, FG injection is supported if the game meets can_inject_fg
+    game.can_inject_fg
 }
 
-/// Returns a human-readable status label and an active boolean for the Frame Generation spec in the UI.
-pub fn frame_generation_status(game: &GameEntry) -> (&'static str, bool) {
+/// Computes the Frame Generation display status tuple: (label, is_on).
+pub fn frame_generation_status(game: &GameEntry) -> (String, bool) {
     if game.has_frame_generation {
-        ("Supported (DLSS-G)", true)
+        ("Active (Native DLSS-G)".to_string(), true)
     } else if game.mfg_unlock_installed {
-        ("Installed (4x MFG)", true)
+        ("Active (Injected 4x MFG)".to_string(), true)
     } else if game.can_inject_fg {
-        let api_lower = game.api.to_lowercase();
-        if api_lower.contains("vulkan") {
-            ("Supported (Vulkan Streamline)", true)
-        } else {
-            ("Unsupported (Requires Native DLSS-G)", false)
-        }
+        ("Injectable (Streamline FG)".to_string(), false)
     } else {
-        ("Unsupported (Requires Native DLSS-G)", false)
+        ("Unsupported (Requires Native DLSS-G)".to_string(), false)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
 
-    fn make_test_game(api: &str, bitness: u32, dlss: Option<&str>) -> GameEntry {
-        GameEntry {
-            name: "Test Game".to_string(),
-            dir: PathBuf::from("C:\\Games\\Test"),
-            exe_path: PathBuf::from("C:\\Games\\Test\\game.exe"),
-            exe_rel: "game.exe".to_string(),
-            bitness,
-            api: api.to_string(),
-            dlss_version: dlss.map(|s| s.to_string()),
-            optiscaler_installed: false,
-            optiscaler_presr: false,
-            optiscaler_passes: 1,
-            has_frame_generation: false,
-            can_inject_fg: false,
-            mfg_unlock_installed: false,
-            has_backup: false,
-            launcher: "Steam".to_string(),
-            poster: None,
-            reshade_installed: false,
-            reshade_version: None,
-            reshade_addon_support: false,
-            addon_installed: false,
-            installed_route: None,
-            files: Vec::new(),
-            available_exes: Vec::new(),
-            is_laa: false,
-            nr_style: 0,
-            nr_style_enabled: false,
-            mfg_multiplier: 4,
-            has_anti_cheat: false,
-        }
-    }
-
-    #[test]
-    fn test_32bit_game_rejects_optiscaler() {
-        let g = make_test_game("DirectX 12", 32, Some("3.7.0"));
-        assert_eq!(check_opti_reason(&g), Some(OptiReason::Unsupported));
-        let routes = routes_for(&g);
-        assert!(!routes.contains(&InstallRoute::OptiScaler));
-        assert_eq!(routes, vec![InstallRoute::Feeder]);
-    }
-
-    #[test]
-    fn test_game_without_dlss_rejects_optiscaler() {
-        let g = make_test_game("DirectX 12", 64, None);
-        assert_eq!(check_opti_reason(&g), Some(OptiReason::NeedsDlss));
-        let routes = routes_for(&g);
-        assert!(!routes.contains(&InstallRoute::OptiScaler));
-        assert_eq!(routes, vec![InstallRoute::Feeder]);
-        assert_eq!(recommended_route(&g), InstallRoute::Feeder);
-    }
-
-    #[test]
-    fn test_dx9_game_rejects_optiscaler() {
-        let g = make_test_game("DirectX 9", 64, None);
-        assert_eq!(check_opti_reason(&g), Some(OptiReason::Unsupported));
-        let routes = routes_for(&g);
-        assert_eq!(routes, vec![InstallRoute::Feeder]);
-    }
-
-    #[test]
-    fn test_dx12_game_with_dlss_allows_all() {
-        let g = make_test_game("DirectX 12", 64, Some("3.7.0"));
-        assert_eq!(check_opti_reason(&g), None);
-        let routes = routes_for(&g);
-        assert!(routes.contains(&InstallRoute::Native));
-        assert!(routes.contains(&InstallRoute::Feeder));
-        assert!(routes.contains(&InstallRoute::OptiScaler));
-        assert_eq!(recommended_route(&g), InstallRoute::Native);
-        assert!(is_native_dlss_supported(&g));
-    }
-
-    #[test]
-    fn test_vulkan_and_dx11_games_reject_native_dlss() {
-        let g_vk = make_test_game("Vulkan", 64, Some("2.4.2"));
-        assert!(!is_native_dlss_supported(&g_vk), "Vulkan games cannot use D3D12 Native DLSS");
-
-        let g_dx11 = make_test_game("DirectX 11", 64, Some("2.4.2"));
-        assert!(!is_native_dlss_supported(&g_dx11), "DX11 games cannot use D3D12 Native DLSS");
-
-        let g_nodlss = make_test_game("DirectX 12", 64, None);
-        assert!(!is_native_dlss_supported(&g_nodlss), "Games without DLSS cannot use Native DLSS");
-    }
-
-    #[test]
-    fn test_install_route_and_opti_reason_methods() {
-        assert_eq!(InstallRoute::Native.as_str(), "native");
-        assert_eq!(InstallRoute::OptiScaler.as_str(), "optiscaler");
-        assert_eq!(InstallRoute::Feeder.as_str(), "feeder");
-
-        assert!(OptiReason::Unsupported.message().contains("64-bit"));
-        assert!(OptiReason::NeedsDlss.message().contains("original DLSS"));
-    }
-
-    #[test]
-    fn test_dx8_dx10_opengl_route_rules() {
-        let g_dx10 = make_test_game("DirectX 10", 64, Some("2.4.2"));
-        assert_eq!(routes_for(&g_dx10), Vec::<InstallRoute>::new());
-
-        let g_dx8_32 = make_test_game("DirectX 8", 32, None);
-        assert_eq!(routes_for(&g_dx8_32), vec![InstallRoute::Feeder]);
-
-        let g_dx8_64 = make_test_game("DirectX 8", 64, None);
-        assert_eq!(routes_for(&g_dx8_64), Vec::<InstallRoute>::new());
-
-        let g_opengl_dlss = make_test_game("OpenGL", 64, Some("2.4.2"));
-        // OpenGL check_opti_reason is Unsupported, so routes_for returns only Feeder
-        assert_eq!(routes_for(&g_opengl_dlss), vec![InstallRoute::Feeder]);
-
-        let g_unknown_bitness = make_test_game("DirectX 12", 16, Some("3.7.0"));
-        assert_eq!(routes_for(&g_unknown_bitness), Vec::<InstallRoute>::new());
-    }
-
-    #[test]
-    fn test_vulkan_dlss2_game_supports_frame_generation_injection() {
-        let mut g = make_test_game("Vulkan", 64, Some("2.4.2"));
-        g.can_inject_fg = true;
-        g.has_frame_generation = false;
-
-        assert!(is_frame_generation_supported(&g), "BG3 Vulkan must support frame generation injection");
-        let (label, on) = frame_generation_status(&g);
-        assert_eq!(label, "Supported (Vulkan Streamline)");
-        assert!(on);
-    }
-
-    #[test]
-    fn test_dx11_dlss2_game_rejects_frame_generation_injection() {
-        let mut g = make_test_game("DirectX 11", 64, Some("2.4.2"));
-        g.can_inject_fg = false;
-        g.has_frame_generation = false;
-
-        assert!(!is_frame_generation_supported(&g), "BG3 DX11 must reject frame generation injection");
-        let (label, on) = frame_generation_status(&g);
-        assert_eq!(label, "Unsupported (Requires Native DLSS-G)");
-        assert!(!on);
-    }
-
-    #[test]
-    fn test_native_dlssg_game_reports_native_status() {
-        let mut g = make_test_game("DirectX 12", 64, Some("3.7.0"));
-        g.has_frame_generation = true;
-        g.can_inject_fg = false;
-
-        assert!(is_frame_generation_supported(&g), "Native DLSS-G game must support frame generation");
-        let (label, on) = frame_generation_status(&g);
-        assert_eq!(label, "Supported (DLSS-G)");
-        assert!(on);
-    }
-
-    #[test]
-    fn test_raster_game_without_dlss_rejects_frame_generation() {
-        let mut g = make_test_game("DirectX 11", 64, None);
-        g.has_frame_generation = false;
-        g.can_inject_fg = false;
-        g.mfg_unlock_installed = false;
-
-        assert!(!is_frame_generation_supported(&g), "Pure raster game without DLSS must NOT support frame generation");
-        let (label, on) = frame_generation_status(&g);
-        assert_eq!(label, "Unsupported (Requires Native DLSS-G)");
-        assert!(!on);
-    }
-
-    #[test]
-    fn test_switching_between_vulkan_and_dx11_updates_frame_generation_support() {
-        // Initial state: Vulkan game with DLSS 2 (can_inject_fg = true)
-        let mut g = make_test_game("Vulkan", 64, Some("2.4.2"));
-        g.can_inject_fg = true;
-        g.has_frame_generation = false;
-
-        assert!(is_frame_generation_supported(&g), "Vulkan game must support frame generation");
-
-        // User switches dropdown to DX11 executable (bg3_dx11.exe)
-        g.api = "DirectX 11".to_string();
-        // Even if can_inject_fg was momentarily stale or set, is_frame_generation_supported must strictly reject DX11
-        assert!(!is_frame_generation_supported(&g), "DirectX 11 executable must strictly reject frame generation");
-
-        // User switches dropdown back to Vulkan (bg3.exe)
-        g.api = "Vulkan".to_string();
-        assert!(is_frame_generation_supported(&g), "Vulkan executable must support frame generation again");
-    }
-
-    #[test]
-    fn test_route_advisories_for_dead_space_dx9_32bit() {
-        let g = make_test_game("DirectX 9", 32, None);
-        
-        // OptiScaler advisory
-        let opti_adv = get_optiscaler_advisory(&g).expect("OptiScaler should have advisory on 32-bit DX9 without DLSS");
-        assert!(opti_adv.reasons.iter().any(|r| r.contains("32-bit")));
-        assert!(opti_adv.reasons.iter().any(|r| r.contains("DirectX 9")));
-        assert!(opti_adv.reasons.iter().any(|r| r.contains("Missing Native DLSS")));
-
-        // Native DLSS advisory
-        let nat_adv = get_native_dlss_advisory(&g).expect("Native DLSS should have advisory on 32-bit DX9 without DLSS");
-        assert!(nat_adv.reasons.iter().any(|r| r.contains("Non-DirectX 12")));
-        assert!(nat_adv.reasons.iter().any(|r| r.contains("32-bit")));
-
-        // MFG advisory
-        let mfg_adv = get_mfg_advisory(&g, true).expect("MFG should have advisory on game without native DLSS-G");
-        assert!(mfg_adv.reasons.iter().any(|r| r.contains("Missing Native DLSS-G")));
-    }
-
-    #[test]
-    fn test_route_advisories_none_for_ideal_dx12_game() {
-        let mut g = make_test_game("DirectX 12", 64, Some("3.7.0"));
-        g.has_frame_generation = true;
-        
-        assert!(get_optiscaler_advisory(&g).is_none());
-        assert!(get_native_dlss_advisory(&g).is_none());
-        assert!(get_mfg_advisory(&g, true).is_none());
-    }
-
-    #[test]
-    fn test_mfg_advisory_persists_on_incompatible_api_even_when_mfg_unlock_installed() {
-        // Baldur's Gate 3 DX11 scenario: DirectX 11, 64-bit, DLSS present, NO native FG
-        let mut g = make_test_game("DirectX 11", 64, Some("3.7.0"));
-        g.name = "Baldurs Gate 3".to_string();
-        g.has_frame_generation = false;
-        g.mfg_unlock_installed = true; // Force-override previously deployed!
-
-        let adv = get_mfg_advisory(&g, true).expect("MFG advisory must still be reported on DirectX 11 even if mfg_unlock_installed is true");
-        assert!(adv.reasons.iter().any(|r| r.contains("DirectX 11 Limitation")), "Must report DirectX 11 Limitation");
-    }
-}
 

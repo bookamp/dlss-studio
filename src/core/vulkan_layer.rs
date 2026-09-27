@@ -27,7 +27,8 @@ thread_local! {
     };
 }
 
-fn get_vulkan_layer_storage_dir() -> PathBuf {
+#[doc(hidden)]
+pub fn get_vulkan_layer_storage_dir() -> PathBuf {
     #[cfg(test)]
     {
         TEST_STORAGE_DIR.with(|p| p.clone())
@@ -40,7 +41,8 @@ fn get_vulkan_layer_storage_dir() -> PathBuf {
     }
 }
 
-fn is_valid_64bit_pe(path: &Path) -> bool {
+#[doc(hidden)]
+pub fn is_valid_64bit_pe(path: &Path) -> bool {
     if let Ok(meta) = fs::metadata(path) {
         if meta.len() < 100_000 {
             return false;
@@ -52,7 +54,8 @@ fn is_valid_64bit_pe(path: &Path) -> bool {
     false
 }
 
-fn read_registered_games(storage_dir: &Path) -> Vec<String> {
+#[doc(hidden)]
+pub fn read_registered_games(storage_dir: &Path) -> Vec<String> {
     let rec_path = storage_dir.join("installs.json");
     if let Ok(data) = fs::read_to_string(&rec_path) {
         if let Ok(rec) = serde_json::from_str::<InstallsRecord>(&data) {
@@ -62,7 +65,8 @@ fn read_registered_games(storage_dir: &Path) -> Vec<String> {
     Vec::new()
 }
 
-fn save_registered_games(storage_dir: &Path, games: &[String]) -> std::io::Result<()> {
+#[doc(hidden)]
+pub fn save_registered_games(storage_dir: &Path, games: &[String]) -> std::io::Result<()> {
     let rec_path = storage_dir.join("installs.json");
     let rec = InstallsRecord {
         version: 1,
@@ -301,88 +305,3 @@ pub fn is_game_registered(game_dir: &Path) -> bool {
     games.iter().any(|g| g.eq_ignore_ascii_case(&norm_str))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_vulkan_layer_storage_dir_creation() {
-        let _state_lock = crate::core::state::STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = get_vulkan_layer_storage_dir();
-        assert!(dir.is_dir());
-    }
-
-    #[test]
-    fn test_read_and_save_registered_games() {
-        let temp = std::env::temp_dir().join(format!("test_vk_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _ = fs::create_dir_all(&temp);
-        let games = vec!["C:\\Games\\Game1".to_string(), "C:\\Games\\Game2".to_string()];
-        save_registered_games(&temp, &games).unwrap();
-
-        let read = read_registered_games(&temp);
-        assert_eq!(read, games);
-        let _ = fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn test_auto_generate_vulkan_manifest_when_missing() {
-        let _state_lock = crate::core::state::STATE_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let temp = std::env::temp_dir().join(format!("test_vk_gen_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _ = fs::create_dir_all(&temp);
-        let dummy_dll = temp.join("ReShade64.dll");
-        fs::write(&dummy_dll, b"dummy reshade dll").unwrap();
-
-        let storage_dir = get_vulkan_layer_storage_dir();
-        let target_json = storage_dir.join("ReShade64.json");
-        // Remove existing target_json if any to test auto-generation
-        let backup = if target_json.is_file() {
-            fs::read_to_string(&target_json).ok()
-        } else {
-            None
-        };
-        let _ = fs::remove_file(&target_json);
-
-        let game_dir = temp.join("GameDir");
-        let _ = fs::create_dir_all(&game_dir);
-
-        let res = register_vulkan_layer(&game_dir, None, Some(&dummy_dll));
-        assert!(res.is_ok(), "register_vulkan_layer must auto-generate manifest successfully");
-        assert!(target_json.is_file(), "ReShade64.json must be generated");
-
-        let content = fs::read_to_string(&target_json).unwrap();
-        assert!(content.contains("VK_LAYER_reshade"));
-
-        // Clean up test game registration
-        let _ = unregister_vulkan_layer(&game_dir);
-
-        // Restore backup if existed
-        if let Some(b) = backup {
-            let _ = fs::write(&target_json, b);
-        } else {
-            let _ = fs::remove_file(&target_json);
-        }
-        let _ = fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn test_is_valid_64bit_pe_checks() {
-        let temp = std::env::temp_dir().join(format!("test_pe_vk_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _ = fs::create_dir_all(&temp);
-
-        // Missing file
-        assert!(!is_valid_64bit_pe(&temp.join("missing.dll")));
-
-        // Too small (< 100_000 bytes)
-        let short_f = temp.join("short.dll");
-        fs::write(&short_f, vec![0u8; 1024]).unwrap();
-        assert!(!is_valid_64bit_pe(&short_f));
-
-        // Real 64-bit system DLL
-        let sys_dll = Path::new("C:\\Windows\\System32\\kernel32.dll");
-        if sys_dll.is_file() {
-            assert!(is_valid_64bit_pe(sys_dll));
-        }
-
-        let _ = fs::remove_dir_all(temp);
-    }
-}

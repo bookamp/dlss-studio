@@ -42,7 +42,8 @@ pub fn clean_name(name: &str) -> String {
     s.trim().to_string()
 }
 
-fn norm_title(s: &str) -> String {
+#[doc(hidden)]
+pub fn norm_title(s: &str) -> String {
     s.to_lowercase()
         .chars()
         .map(|c| if c.is_alphanumeric() || c.is_whitespace() { c } else { ' ' })
@@ -94,7 +95,8 @@ pub fn score_item(item: &StoreItem, query: &str) -> i32 {
 }
 
 /// Evaluates candidate Steam search rows and picks the highest scoring match.
-fn pick_best(items: &[StoreItem], query: &str) -> Option<StoreItem> {
+#[doc(hidden)]
+pub fn pick_best(items: &[StoreItem], query: &str) -> Option<StoreItem> {
     let mut best: Option<StoreItem> = None;
     let mut best_score: i32 = -1;
 
@@ -166,6 +168,99 @@ pub fn bytes_to_data_uri(bytes: &[u8]) -> String {
     format!("data:image/jpeg;base64,{}", encoded)
 }
 
+/// Saves and optimizes an image file for use as game artwork.
+/// Oversized images (> 400 KB or dimensions > 600x900) are downscaled to fit within 600x900.
+pub fn optimize_and_save_cover_image(src_path: &Path, dst_path: &Path) -> std::io::Result<u64> {
+    let src_ext = src_path.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase());
+    let dst_ext = dst_path.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase());
+
+    // If source and destination format match, file is small (< 300 KB), and dimensions fit, fast copy
+    if src_ext == dst_ext && src_path != dst_path {
+        if let Ok(meta) = src_path.metadata() {
+            if meta.len() < 300_000 {
+                if let Ok((w, h)) = image::image_dimensions(src_path) {
+                    if w <= 600 && h <= 900 {
+                        return fs::copy(src_path, dst_path);
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok(img) = image::open(src_path) {
+        let (w, h) = (img.width(), img.height());
+        let resized = if w > 600 || h > 900 {
+            img.resize(600, 900, image::imageops::FilterType::Lanczos3)
+        } else {
+            img
+        };
+
+        let ext = dst_path.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase());
+        let fmt = match ext.as_deref() {
+            Some("webp") => image::ImageFormat::WebP,
+            Some("png") => image::ImageFormat::Png,
+            _ => image::ImageFormat::Jpeg,
+        };
+
+        let write_target = if src_path == dst_path {
+            dst_path.with_extension("tmp_opt")
+        } else {
+            dst_path.to_path_buf()
+        };
+
+        if resized.save_with_format(&write_target, fmt).is_ok() {
+            if write_target != dst_path {
+                let _ = fs::rename(&write_target, dst_path);
+            }
+            if let Ok(m) = dst_path.metadata() {
+                return Ok(m.len());
+            }
+        }
+        if write_target != dst_path && write_target.exists() {
+            let _ = fs::remove_file(&write_target);
+        }
+    }
+
+    if src_path != dst_path {
+        fs::copy(src_path, dst_path)
+    } else {
+        Ok(src_path.metadata().map(|m| m.len()).unwrap_or(0))
+    }
+}
+
+/// Saves and optimizes raw image bytes (e.g. from user file picker) to dst_path.
+pub fn optimize_and_save_cover_bytes(bytes: &[u8], dst_path: &Path) -> std::io::Result<u64> {
+    if bytes.len() < 300_000 {
+        fs::write(dst_path, bytes)?;
+        return Ok(bytes.len() as u64);
+    }
+
+    if let Ok(img) = image::load_from_memory(bytes) {
+        let (w, h) = (img.width(), img.height());
+        let resized = if w > 600 || h > 900 {
+            img.resize(600, 900, image::imageops::FilterType::Lanczos3)
+        } else {
+            img
+        };
+
+        let ext = dst_path.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase());
+        let fmt = match ext.as_deref() {
+            Some("webp") => image::ImageFormat::WebP,
+            Some("png") => image::ImageFormat::Png,
+            _ => image::ImageFormat::Jpeg,
+        };
+
+        if resized.save_with_format(dst_path, fmt).is_ok() {
+            if let Ok(m) = dst_path.metadata() {
+                return Ok(m.len());
+            }
+        }
+    }
+
+    fs::write(dst_path, bytes)?;
+    Ok(bytes.len() as u64)
+}
+
 /// Helper to convert a local file to a lightweight HTTP URI served by Wry's custom desktop protocol
 pub fn file_to_art_uri(path: &Path) -> Option<String> {
     if !path.exists() {
@@ -180,14 +275,183 @@ pub fn file_to_art_uri(path: &Path) -> Option<String> {
         return Some(format!("http://dlss-art.localhost/art/{}", s));
     }
 
-    // Otherwise, copy to art cache under safe key
+    // Otherwise, copy/optimize into art cache under safe key
     let key = key_for_dir(path);
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
     let cached = art_dir.join(format!("{}.{}", key, ext));
     if !cached.exists() {
-        let _ = fs::copy(path, &cached);
+        let _ = optimize_and_save_cover_image(path, &cached);
+    } else if let Ok(meta) = cached.metadata() {
+        // If the cached file is an oversized legacy uncompressed image (> 1 MB), optimize it in place
+        if meta.len() > 1_000_000 {
+            let _ = optimize_and_save_cover_image(&cached, &cached);
+        }
     }
     Some(format!("http://dlss-art.localhost/art/{}.{}", key, ext))
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ArtCleanupStats {
+    pub files_scanned: usize,
+    pub files_removed: usize,
+    pub bytes_reclaimed: u64,
+}
+
+/// Extracts the underlying cached art filename from an art URI or path.
+/// E.g. "http://dlss-art.localhost/art/f376bf8f7f1228c0.png" -> Some("f376bf8f7f1228c0.png")
+/// "dlss-art://art/0123456789abcdef-cover.jpg" -> Some("0123456789abcdef-cover.jpg")
+pub fn extract_art_filename(uri_or_path: &str) -> Option<String> {
+    if uri_or_path.is_empty() || uri_or_path.starts_with("data:image/") {
+        return None;
+    }
+    let s = uri_or_path.split('?').next().unwrap_or(uri_or_path);
+    let s = s.split('#').next().unwrap_or(s);
+    let trimmed = s.trim_end_matches(['/', '\\']);
+
+    if let Some(pos) = trimmed.rfind("/art/") {
+        let name = &trimmed[pos + 5..];
+        let clean = name.trim_matches(['/', '\\']);
+        if !clean.is_empty() && !clean.contains('/') && !clean.contains('\\') {
+            return Some(clean.to_string());
+        }
+    }
+    if let Some(pos) = trimmed.rfind("dlss-art://") {
+        let name = &trimmed[pos + 11..];
+        let clean = name.trim_start_matches("localhost/").trim_start_matches("art/").trim_matches(['/', '\\']);
+        if !clean.is_empty() && !clean.contains('/') && !clean.contains('\\') {
+            return Some(clean.to_string());
+        }
+    }
+
+    let p = Path::new(trimmed);
+    if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// Identifies and removes all artwork files in the art cache that do not belong
+/// to any active or hidden game in the user's library, or static whitelisted assets.
+pub fn cleanup_unused_art_in_dir<P: AsRef<Path>>(
+    art_dir: &Path,
+    active_games: &[crate::core::scan::GameEntry],
+    hidden_paths: &[P],
+    custom_posters: &std::collections::HashMap<String, String>,
+) -> ArtCleanupStats {
+    if !art_dir.is_dir() {
+        return ArtCleanupStats::default();
+    }
+
+    // 1. Build set of valid directory hash keys
+    let mut valid_keys = std::collections::HashSet::new();
+    for g in active_games {
+        valid_keys.insert(key_for_dir(&g.dir));
+    }
+    for p in hidden_paths {
+        valid_keys.insert(key_for_dir(p.as_ref()));
+    }
+
+    // 2. Build set of explicit filenames referenced in posters or state
+    let mut explicit_filenames = std::collections::HashSet::new();
+    for g in active_games {
+        if let Some(ref p) = g.poster {
+            if let Some(name) = extract_art_filename(p) {
+                explicit_filenames.insert(name.to_lowercase());
+            }
+        }
+    }
+    for (_, poster_val) in custom_posters {
+        if let Some(name) = extract_art_filename(poster_val) {
+            explicit_filenames.insert(name.to_lowercase());
+        }
+    }
+
+    // 3. Protected static whitelist
+    let protected_static = [
+        "rust_on_iron.jpg",
+        "vibepollo_poster_v2.png",
+        "vibepollo_poster_v2.webp",
+        "rust_dark.webp",
+        "rust_light.webp",
+    ];
+
+    // 4. Iterate art/ and delete unreferenced files
+    let mut stats = ArtCleanupStats::default();
+    if let Ok(entries) = fs::read_dir(art_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            stats.files_scanned += 1;
+            let filename = entry.file_name().to_string_lossy().to_string();
+            let filename_lower = filename.to_lowercase();
+
+            // Check if protected static asset
+            if protected_static.iter().any(|&s| s.eq_ignore_ascii_case(&filename_lower)) {
+                continue;
+            }
+
+            // Check if explicitly referenced filename
+            if explicit_filenames.contains(&filename_lower) {
+                continue;
+            }
+
+            // Check if filename starts with or matches any active game key
+            let is_active_game_art = valid_keys.iter().any(|k| filename_lower.starts_with(k));
+            if is_active_game_art {
+                continue;
+            }
+
+            // Orphaned file!
+            let file_size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            if fs::remove_file(&path).is_ok() {
+                stats.files_removed += 1;
+                stats.bytes_reclaimed += file_size;
+                crate::core::logger::info(
+                    "art",
+                    &format!("Purged orphaned artwork: {} (reclaimed {} KB)", filename, file_size / 1024),
+                );
+            }
+        }
+    }
+
+    stats
+}
+
+/// Helper that runs cleanup against the application's configured art directory.
+pub fn cleanup_unused_art<P: AsRef<Path>>(
+    active_games: &[crate::core::scan::GameEntry],
+    hidden_paths: &[P],
+    custom_posters: &std::collections::HashMap<String, String>,
+) -> ArtCleanupStats {
+    let art_dir = get_appdata_dir().join("art");
+    cleanup_unused_art_in_dir(&art_dir, active_games, hidden_paths, custom_posters)
+}
+
+/// Computes the total byte size of an art directory.
+pub fn get_art_cache_size_in_dir(art_dir: &Path) -> u64 {
+    if !art_dir.is_dir() {
+        return 0;
+    }
+    let mut total = 0u64;
+    if let Ok(entries) = fs::read_dir(art_dir) {
+        for entry in entries.flatten() {
+            if let Ok(m) = entry.metadata() {
+                if m.is_file() {
+                    total += m.len();
+                }
+            }
+        }
+    }
+    total
+}
+
+/// Computes the total byte size of the application's configured art directory.
+pub fn get_art_cache_size() -> u64 {
+    get_art_cache_size_in_dir(&get_appdata_dir().join("art"))
 }
 
 /// Normalizes any poster URI (legacy dlss-art://, raw local file paths, or current scheme)
@@ -222,10 +486,76 @@ pub fn normalize_art_uri(uri: &str) -> String {
     uri.to_string()
 }
 
+static EMBEDDED_RUST_DARK: &[u8] = include_bytes!("../../assets/rust_dark.webp");
+static EMBEDDED_RUST_LIGHT: &[u8] = include_bytes!("../../assets/rust_light.webp");
+
+fn mime_from_extension(filename: &str) -> &'static str {
+    let ext = std::path::Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    if ext.eq_ignore_ascii_case("webp") {
+        "image/webp"
+    } else if ext.eq_ignore_ascii_case("png") {
+        "image/png"
+    } else if ext.eq_ignore_ascii_case("svg") {
+        "image/svg+xml"
+    } else {
+        "image/jpeg"
+    }
+}
+
+/// Serves static application assets located in the `assets/` folder, falling back to compile-time
+/// embedded binaries so standalone portable single-file executables remain 100% self-contained.
+pub fn serve_static_asset(name: &str) -> Option<(String, Vec<u8>)> {
+    let clean_name = name.split('?').next().unwrap_or(name).trim_start_matches('/');
+
+    // 1. Try reading directly from disk if assets/ exists alongside cwd or exe
+    let mut candidate_paths = vec![std::path::PathBuf::from("assets").join(clean_name)];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidate_paths.push(parent.join("assets").join(clean_name));
+        }
+    }
+
+    for path in &candidate_paths {
+        if path.is_file() {
+            if let Ok(bytes) = fs::read(path) {
+                let mime = mime_from_extension(clean_name);
+                return Some((mime.to_string(), bytes));
+            }
+        }
+    }
+
+    // 2. Embedded compile-time fallback for standalone portable executable distribution
+    match clean_name {
+        "rust_dark.webp" => Some(("image/webp".to_string(), EMBEDDED_RUST_DARK.to_vec())),
+        "rust_light.webp" => Some(("image/webp".to_string(), EMBEDDED_RUST_LIGHT.to_vec())),
+        _ => None,
+    }
+}
+
 /// Handles requests to the custom dlss-art protocol, reading cached posters directly from disk.
 /// Accepts URLs from Wry's internal rewrite (dlss-art://localhost/art/...), direct HTTP (http://dlss-art.localhost/art/...),
-/// or legacy (dlss-art://art/...).
+/// or legacy (dlss-art://art/...), as well as static application assets (http://dlss-art.localhost/assets/...).
 pub fn handle_art_request(uri: &str) -> Option<(String, Vec<u8>)> {
+    let clean = uri.split('?').next().unwrap_or(uri);
+
+    // 1. Static application assets (/assets/...)
+    if let Some(idx) = clean.find("/assets/") {
+        let asset_name = &clean[idx + 8..];
+        return serve_static_asset(asset_name);
+    }
+    let without_proto = clean
+        .trim_start_matches("dlss-art://")
+        .trim_start_matches("dlss-art:")
+        .trim_start_matches("http://dlss-art.localhost/")
+        .trim_start_matches("http://dlss-art.local/");
+    if let Some(stripped) = without_proto.strip_prefix("assets/") {
+        return serve_static_asset(stripped);
+    }
+
+    // 2. Game art poster cache
     let art_dir = get_appdata_dir().join("art");
 
     let target_file = if let Some(idx) = uri.find("file=") {
@@ -234,17 +564,11 @@ pub fn handle_art_request(uri: &str) -> Option<(String, Vec<u8>)> {
         let decoded = url_decode(raw_file);
         std::path::PathBuf::from(decoded)
     } else {
-        let clean = uri.split('?').next().unwrap_or(uri);
         let filename = if let Some(idx) = clean.find("/art/") {
             &clean[idx + 5..]
         } else if let Some(stripped) = clean.strip_prefix("art/") {
             stripped
         } else {
-            let without_proto = clean
-                .trim_start_matches("dlss-art://")
-                .trim_start_matches("dlss-art:")
-                .trim_start_matches("http://dlss-art.localhost/")
-                .trim_start_matches("http://dlss-art.local/");
             without_proto.trim_start_matches("localhost/").trim_start_matches('/')
         };
         art_dir.join(filename.trim_start_matches('/'))
@@ -303,7 +627,7 @@ pub async fn search_steam_candidates(name: &str) -> Vec<(u64, String)> {
     }
 
     let client = match reqwest::Client::builder()
-        .user_agent("DLSS5-Swapper-Native/1.0")
+        .user_agent("DLSS5-Studio-Native/1.0")
         .build()
     {
         Ok(c) => c,
@@ -454,7 +778,7 @@ pub async fn resolve_game_art(name: &str, dir: &Path, known_appid: Option<u64>) 
     }
 
     let client = reqwest::Client::builder()
-        .user_agent("DLSS5-Swapper-Native/1.0")
+        .user_agent("DLSS5-Studio-Native/1.0")
         .build()
         .unwrap_or_default();
 
@@ -535,144 +859,5 @@ pub async fn resolve_game_art(name: &str, dir: &Path, known_appid: Option<u64>) 
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn test_clean_name_tags_and_brackets() {
-        assert_eq!(clean_name("Cyberpunk 2077 [v2.12] (DODI Repack)"), "Cyberpunk 2077");
-        assert_eq!(clean_name("The.Witcher.3.Wild.Hunt-FitGirl"), "The Witcher 3 Wild Hunt");
-        assert_eq!(clean_name("Baldur's Gate 3 (ElAmigos)"), "Baldur's Gate 3");
-        assert_eq!(clean_name("Hogwarts Legacy [CODEX]"), "Hogwarts Legacy");
-        assert_eq!(clean_name("Starfield [FitGirl Repack]"), "Starfield");
-    }
 
-    #[test]
-    fn test_norm_title_and_scoring() {
-        assert_eq!(norm_title("Cyberpunk 2077: Phantom Liberty"), "cyberpunk 2077 phantom liberty");
-        let items = vec![
-            StoreItem { id: 1091500, name: Some("Cyberpunk 2077".to_string()), item_type: Some("app".to_string()) },
-            StoreItem { id: 2138330, name: Some("Cyberpunk 2077: Phantom Liberty".to_string()), item_type: Some("app".to_string()) },
-            StoreItem { id: 9999999, name: Some("Cyberpunk Bonus Pack".to_string()), item_type: None },
-        ];
-        let best = pick_best(&items, "Cyberpunk 2077");
-        assert!(best.is_some());
-        assert_eq!(best.unwrap().id, 1091500);
-
-        let best_dlc = pick_best(&items, "Phantom Liberty");
-        assert!(best_dlc.is_some());
-        assert_eq!(best_dlc.unwrap().id, 2138330);
-    }
-
-    #[test]
-    fn test_key_for_dir_hashing() {
-        let p1 = Path::new("C:\\Games\\Cyberpunk 2077");
-        let p2 = Path::new("C:/Games/Cyberpunk 2077");
-        assert_eq!(key_for_dir(p1), key_for_dir(p2));
-        assert_ne!(key_for_dir(p1), key_for_dir(Path::new("D:\\Games\\Witcher 3")));
-    }
-
-    #[test]
-    fn test_data_uri_conversion() {
-        let bytes = vec![0x89u8; 1024]; // 1 KB buffer > 500 bytes
-        let uri = bytes_to_data_uri(&bytes);
-        assert!(uri.starts_with("data:image/jpeg;base64,"));
-        assert!(uri.len() > 25);
-
-        let temp = std::env::temp_dir().join(format!("test_art_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        fs::create_dir_all(&temp).unwrap();
-        let file_p = temp.join("cover.jpg");
-        fs::write(&file_p, &bytes).unwrap();
-        assert_eq!(file_to_data_uri(&file_p), Some(uri));
-        assert_eq!(file_to_data_uri(&temp.join("missing.jpg")), None);
-
-        let _ = fs::remove_dir_all(&temp);
-    }
-
-    #[test]
-    fn test_file_to_art_uri_and_url_decode() {
-        assert_eq!(url_decode("Hello%20World%2BTest"), "Hello World+Test");
-        let temp = std::env::temp_dir().join(format!("test_art_uri_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        fs::create_dir_all(&temp).unwrap();
-        let file_p = temp.join("test_cover.jpg");
-        fs::write(&file_p, b"synthetic-jpeg-data").unwrap();
-
-        let art_uri = file_to_art_uri(&file_p);
-        assert!(art_uri.is_some());
-        let uri_str = art_uri.unwrap();
-        assert!(uri_str.starts_with("http://dlss-art.localhost/art/"));
-
-        // Direct HTTP URI
-        let handled_direct = handle_art_request(&uri_str);
-        assert!(handled_direct.is_some());
-        let (mime, data) = handled_direct.unwrap();
-        assert_eq!(mime, "image/jpeg");
-        assert_eq!(data, b"synthetic-jpeg-data");
-
-        // Wry internal rewritten URI (dlss-art://localhost/art/...)
-        let wry_uri = uri_str.replace("http://dlss-art.localhost/art/", "dlss-art://localhost/art/");
-        let handled_wry = handle_art_request(&wry_uri);
-        assert!(handled_wry.is_some());
-        assert_eq!(handled_wry.unwrap().1, b"synthetic-jpeg-data");
-
-        // Legacy stored URI (dlss-art://art/...)
-        let legacy_uri = uri_str.replace("http://dlss-art.localhost/art/", "dlss-art://art/");
-        let handled_legacy = handle_art_request(&legacy_uri);
-        assert!(handled_legacy.is_some());
-        assert_eq!(handled_legacy.unwrap().1, b"synthetic-jpeg-data");
-
-        // normalize_art_uri tests
-        assert_eq!(
-            normalize_art_uri("dlss-art://art/my-cover.jpg"),
-            "http://dlss-art.localhost/art/my-cover.jpg"
-        );
-        assert_eq!(
-            normalize_art_uri("dlss-art://localhost/art/my-cover.jpg"),
-            "http://dlss-art.localhost/art/my-cover.jpg"
-        );
-        assert_eq!(
-            normalize_art_uri("http://dlss-art.localhost/art/my-cover.jpg"),
-            "http://dlss-art.localhost/art/my-cover.jpg"
-        );
-
-        let _ = fs::remove_dir_all(&temp);
-    }
-
-    #[test]
-    fn test_steam_candidate_ranking_with_editions() {
-        let items = vec![
-            StoreItem {
-                id: 3669870,
-                name: Some("CONTROL Resonant".to_string()),
-                item_type: Some("app".to_string()),
-            },
-            StoreItem {
-                id: 870780,
-                name: Some("CONTROL Ultimate Edition".to_string()),
-                item_type: Some("app".to_string()),
-            },
-        ];
-
-        let best = pick_best(&items, "Control");
-        assert!(best.is_some());
-        assert_eq!(best.unwrap().id, 870780, "Edition titles like 'CONTROL Ultimate Edition' must be prioritized over unrelated spinoffs");
-    }
-
-    #[test]
-    fn test_handle_art_request_webp() {
-        let temp = std::env::temp_dir().join(format!("art_test_webp_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let _ = fs::create_dir_all(&temp);
-        let webp_file = temp.join("cover.webp");
-        let _ = fs::write(&webp_file, b"RIFF....WEBPVP8 ");
-
-        let uri_str = file_to_art_uri(&webp_file).expect("Must return art URI");
-        assert!(uri_str.ends_with(".webp"));
-        let handled = handle_art_request(&uri_str);
-        assert!(handled.is_some());
-        let (mime, bytes) = handled.unwrap();
-        assert_eq!(mime, "image/webp");
-        assert_eq!(bytes, b"RIFF....WEBPVP8 ");
-        let _ = fs::remove_dir_all(&temp);
-    }
-}

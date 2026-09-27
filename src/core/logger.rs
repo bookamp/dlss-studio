@@ -7,7 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 static LOG_MUTEX: Mutex<()> = Mutex::new(());
 static LAST_PRUNED: Mutex<u64> = Mutex::new(0);
 
-const RETENTION_SECS: u64 = 7 * 86_400; // 7 days
+#[doc(hidden)]
+pub const RETENTION_SECS: u64 = 7 * 86_400; // 7 days
 
 #[cfg(windows)]
 fn get_local_now() -> (u64, String) {
@@ -59,7 +60,8 @@ pub fn get_log_file_path() -> PathBuf {
 }
 
 /// Parses a date string like "2026-09-10" into approximate epoch seconds for pruning comparison
-fn parse_date_to_epoch_approx(date_str: &str) -> Option<u64> {
+#[doc(hidden)]
+pub fn parse_date_to_epoch_approx(date_str: &str) -> Option<u64> {
     let parts: Vec<&str> = date_str.split('-').collect();
     if parts.len() != 3 {
         return None;
@@ -86,9 +88,8 @@ fn parse_date_to_epoch_approx(date_str: &str) -> Option<u64> {
     Some(total_days * 86_400)
 }
 
-/// Prunes entries older than 7 days from the single log file
-pub fn prune_old_entries() {
-    let log_path = get_log_file_path();
+/// Prunes entries older than 7 days from any structured log file
+pub fn prune_log_file(log_path: &std::path::Path) {
     if !log_path.exists() {
         return;
     }
@@ -103,7 +104,7 @@ pub fn prune_old_entries() {
     }
     let cutoff_s = now_s - RETENTION_SECS;
 
-    let file = match fs::File::open(&log_path) {
+    let file = match fs::File::open(log_path) {
         Ok(f) => f,
         Err(_) => return,
     };
@@ -137,18 +138,22 @@ pub fn prune_old_entries() {
             }
             let _ = temp_file.flush();
             drop(temp_file);
-            let _ = fs::rename(&temp_path, &log_path);
+            let _ = fs::rename(&temp_path, log_path);
         }
     }
 }
 
-pub fn log(level: &str, target: &str, message: &str) {
+/// Prunes entries older than 7 days from the standard desktop log file
+pub fn prune_old_entries() {
+    prune_log_file(&get_log_file_path());
+}
+
+pub fn log_to_file(log_path: &std::path::Path, level: &str, target: &str, message: &str) {
     let (epoch_s, timestamp) = get_local_now();
     let log_line = format!("[{}] [{}] [{}] {}\n", timestamp, level, target, message);
 
     let _lock = LOG_MUTEX.lock();
 
-    let log_path = get_log_file_path();
     if let Some(parent) = log_path.parent() {
         if !parent.exists() {
             let _ = fs::create_dir_all(parent);
@@ -159,13 +164,17 @@ pub fn log(level: &str, target: &str, message: &str) {
     if let Ok(mut last_pruned) = LAST_PRUNED.lock() {
         if epoch_s.saturating_sub(*last_pruned) > 21_600 {
             *last_pruned = epoch_s;
-            prune_old_entries();
+            prune_log_file(log_path);
         }
     }
 
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
         let _ = file.write_all(log_line.as_bytes());
     }
+}
+
+pub fn log(level: &str, target: &str, message: &str) {
+    log_to_file(&get_log_file_path(), level, target, message);
 }
 
 pub fn info(target: &str, msg: &str) {
@@ -187,56 +196,3 @@ pub fn debug(target: &str, msg: &str) {
     log("DEBUG", target, msg);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_date_parsing() {
-        let epoch = parse_date_to_epoch_approx("2026-09-10").unwrap();
-        assert!(epoch > 1_700_000_000);
-    }
-
-    #[test]
-    fn test_log_and_prune() {
-        let temp_dir = std::env::temp_dir().join(format!("dlss_logger_test_{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()));
-        fs::create_dir_all(&temp_dir).unwrap();
-        let log_file = temp_dir.join("dlss-studio.log");
-
-        // Write an old entry (from 2020) and a recent entry
-        let old_entry = "[2020-01-01 12:00:00.000] [INFO] [test] Old message\n";
-        let new_entry = "[2026-09-10 12:00:00.000] [INFO] [test] New message\n";
-        fs::write(&log_file, format!("{}{}", old_entry, new_entry)).unwrap();
-
-        // Run prune logic directly on this file
-        let file = fs::File::open(&log_file).unwrap();
-        let reader = BufReader::new(file);
-        let now_s = parse_date_to_epoch_approx("2026-09-10").unwrap();
-        let cutoff_s = now_s - RETENTION_SECS;
-        let mut kept = Vec::new();
-        for line in reader.lines() {
-            let l = line.unwrap();
-            let date_part = &l[1..11];
-            if let Some(line_epoch) = parse_date_to_epoch_approx(date_part) {
-                if line_epoch + 86_400 < cutoff_s {
-                    continue;
-                }
-            }
-            kept.push(l);
-        }
-
-        assert_eq!(kept.len(), 1);
-        assert!(kept[0].contains("New message"));
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_live_logger_write() {
-        info("test", "Testing single rolling log file write");
-        let path = get_log_file_path();
-        assert!(path.exists(), "Log file should exist at {}", path.display());
-        let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("Testing single rolling log file write"));
-    }
-}

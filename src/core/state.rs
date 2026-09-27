@@ -54,8 +54,12 @@ pub struct CustomOverlayTheme {
     pub color: String,
 }
 
+pub const CURRENT_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppState {
+    #[serde(default)]
+    pub version: Option<String>,
     #[serde(default)]
     pub folders: Vec<String>,
     #[serde(default, rename = "excludedRoots")]
@@ -100,6 +104,8 @@ pub struct AppState {
     pub custom_overlay_themes: Vec<CustomOverlayTheme>,
     #[serde(default, rename = "customNames")]
     pub custom_names: HashMap<String, String>,
+    #[serde(default = "default_false", rename = "vibepolloAutoAdd")]
+    pub vibepollo_auto_add: bool,
 }
 
 pub fn is_portable_executable() -> bool {
@@ -126,6 +132,7 @@ fn default_overlay_hotkey() -> String { "F8".to_string() }
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            version: Some(CURRENT_APP_VERSION.to_string()),
             folders: Vec::new(),
             excluded_roots: Vec::new(),
             manual: Vec::new(),
@@ -148,6 +155,7 @@ impl Default for AppState {
             overlay_hotkey: default_overlay_hotkey(),
             custom_overlay_themes: Vec::new(),
             custom_names: HashMap::new(),
+            vibepollo_auto_add: false,
         }
     }
 }
@@ -329,6 +337,67 @@ pub fn get_state_path() -> PathBuf {
     get_appdata_dir().join("library.json")
 }
 
+/// Migrates an `AppState` instance across application version bumps, normalizing legacy
+/// configurations, ensuring mandatory components are enabled, and populating new defaults.
+pub fn migrate_app_state(state: &mut AppState, from_version: Option<&str>, target_version: &str) -> bool {
+    let mut changed = false;
+    let old_v = from_version.unwrap_or("legacy/unversioned");
+    crate::core::logger::info("state", &format!("Checking library.json migration: {} -> {}", old_v, target_version));
+
+    // 1. Normalize path separators across all cached games and executables
+    for game in &mut state.cached_games {
+        let cleaned_dir = clean_path_separators(&game.dir);
+        if cleaned_dir != game.dir {
+            game.dir = cleaned_dir;
+            changed = true;
+        }
+        let cleaned_exe = clean_path_separators(&game.exe_path);
+        if cleaned_exe != game.exe_path {
+            game.exe_path = cleaned_exe;
+            changed = true;
+        }
+        for opt in &mut game.available_exes {
+            let cleaned_opt = clean_path_separators(&opt.path);
+            if cleaned_opt != opt.path {
+                opt.path = cleaned_opt;
+                changed = true;
+            }
+        }
+    }
+
+    // 2. Normalize manual folders and excluded roots
+    for folder in &mut state.folders {
+        let cleaned = clean_path_separators(std::path::Path::new(folder)).to_string_lossy().to_string();
+        if cleaned != *folder {
+            *folder = cleaned;
+            changed = true;
+        }
+    }
+    for root in &mut state.excluded_roots {
+        let cleaned = clean_path_separators(std::path::Path::new(root)).to_string_lossy().to_string();
+        if cleaned != *root {
+            *root = cleaned;
+            changed = true;
+        }
+    }
+
+    // 3. Ensure mandatory core engine add-ons are enabled
+    for mandatory in &["builtin:renodx", "builtin:mfgunlock", "builtin:feeder"] {
+        if !state.addons.iter().any(|a| a == *mandatory) {
+            state.addons.push(mandatory.to_string());
+            changed = true;
+        }
+    }
+
+    // 4. Always stamp with target version
+    if state.version.as_deref() != Some(target_version) {
+        state.version = Some(target_version.to_string());
+        changed = true;
+    }
+
+    changed
+}
+
 pub fn load_state() -> AppState {
     let path = get_state_path();
     if !path.exists() {
@@ -339,27 +408,11 @@ pub fn load_state() -> AppState {
     }
     if let Ok(content) = fs::read_to_string(&path) {
         if let Ok(mut state) = serde_json::from_str::<AppState>(&content) {
-            let mut changed = false;
-            for game in &mut state.cached_games {
-                let cleaned_dir = clean_path_separators(&game.dir);
-                if cleaned_dir != game.dir {
-                    game.dir = cleaned_dir;
-                    changed = true;
-                }
-                let cleaned_exe = clean_path_separators(&game.exe_path);
-                if cleaned_exe != game.exe_path {
-                    game.exe_path = cleaned_exe;
-                    changed = true;
-                }
-                for opt in &mut game.available_exes {
-                    let cleaned_opt = clean_path_separators(&opt.path);
-                    if cleaned_opt != opt.path {
-                        opt.path = cleaned_opt;
-                        changed = true;
-                    }
-                }
-            }
-            if changed {
+            let current_version = CURRENT_APP_VERSION;
+            let old_version = state.version.clone();
+            let needs_migration = old_version.as_deref() != Some(current_version);
+            let migrated = migrate_app_state(&mut state, old_version.as_deref(), current_version);
+            if needs_migration || migrated {
                 let _ = save_state(&state);
             }
             return state;
@@ -373,7 +426,11 @@ pub fn save_state(state: &AppState) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(state)?;
+    let mut to_save = state.clone();
+    if to_save.version.as_deref() != Some(CURRENT_APP_VERSION) {
+        to_save.version = Some(CURRENT_APP_VERSION.to_string());
+    }
+    let json = serde_json::to_string_pretty(&to_save)?;
     fs::write(path, json)?;
     Ok(())
 }
@@ -410,7 +467,7 @@ pub fn ago_localized(lang: &str, ts_ms: u64) -> String {
 use std::sync::Mutex;
 static SESSION_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-#[cfg(test)]
+#[doc(hidden)]
 pub static STATE_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 pub fn log_message(msg: &str) {
@@ -451,7 +508,7 @@ pub fn is_addon_active(state: &AppState, id: &str) -> bool {
     state.addons.iter().any(|a| a == id)
 }
 
-#[cfg(test)]
+#[doc(hidden)]
 pub fn toggle_addon_in_state(state: &mut AppState, id: &str, active: bool) {
     // Base add-ons are mandatory and cannot be deactivated
     if id == "builtin:renodx" || id == "builtin:mfgunlock" || id == "builtin:feeder" {
@@ -473,7 +530,7 @@ pub fn toggle_addon_in_state(state: &mut AppState, id: &str, active: bool) {
     }
 }
 
-#[cfg(test)]
+#[doc(hidden)]
 pub fn add_custom_addon(state: &mut AppState, entry: AddonFileEntry) {
     state.addon_files.retain(|e| e.path != entry.path);
     if !state.addons.contains(&entry.path) {
@@ -482,304 +539,30 @@ pub fn add_custom_addon(state: &mut AppState, entry: AddonFileEntry) {
     state.addon_files.push(entry);
 }
 
-#[cfg(test)]
+#[doc(hidden)]
 pub fn remove_custom_addon(state: &mut AppState, path: &str) {
     state.addon_files.retain(|e| e.path != path);
     state.addons.retain(|a| a != path);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_rust_theme_default_and_serde() {
-        let default_state = AppState::default();
-        assert!(default_state.rust_theme, "Rust theme should be enabled by default");
-
-        let json = serde_json::to_string(&default_state).unwrap();
-        assert!(json.contains(r#""rustTheme":true"#));
-
-        // Test missing key defaults to true
-        let partial_json = r#"{"folders":[],"theme":"dark"}"#;
-        let parsed: AppState = serde_json::from_str(partial_json).unwrap();
-        assert!(parsed.rust_theme, "Missing rustTheme in JSON must default to true");
-
-        // Test explicit false is preserved
-        let false_json = r#"{"folders":[],"rustTheme":false}"#;
-        let parsed_false: AppState = serde_json::from_str(false_json).unwrap();
-        assert!(!parsed_false.rust_theme, "Explicit false rustTheme must be preserved");
-    }
-
-    #[test]
-    fn test_run_in_background_serde() {
-        let default_state = AppState::default();
-        assert!(default_state.run_in_background, "Run in background should default to true");
-
-        let json = serde_json::to_string(&default_state).unwrap();
-        assert!(json.contains(r#""runInBackground":true"#));
-
-        let partial = r#"{"folders":[],"theme":"dark"}"#;
-        let parsed: AppState = serde_json::from_str(partial).unwrap();
-        assert!(parsed.run_in_background, "Missing runInBackground must default to true");
-
-        let false_json = r#"{"runInBackground":false}"#;
-        let parsed_false: AppState = serde_json::from_str(false_json).unwrap();
-        assert!(!parsed_false.run_in_background, "Explicit false runInBackground must be preserved");
-    }
-
-    #[test]
-    fn test_hidden_games_persistence_and_normalization() {
-        let mut state = AppState::default();
-        let game_dir = std::path::PathBuf::from(r"E:\GOG Games\Being a DIK");
-        let game = crate::core::scan::GameEntry {
-            name: "Being a DIK".to_string(),
-            dir: game_dir.clone(),
-            exe_path: game_dir.join("Being a DIK.exe"),
-            exe_rel: "Being a DIK.exe".to_string(),
-            bitness: 64,
-            api: "DirectX 11".to_string(),
-            dlss_version: None,
-            has_frame_generation: false,
-            can_inject_fg: false,
-            optiscaler_installed: false,
-            optiscaler_presr: false,
-            optiscaler_passes: 1,
-            mfg_unlock_installed: false,
-            has_backup: false,
-            launcher: "GOG".to_string(),
-            poster: None,
-            reshade_installed: false,
-            reshade_version: None,
-            reshade_addon_support: false,
-            addon_installed: false,
-            installed_route: None,
-            files: Vec::new(),
-            available_exes: Vec::new(),
-            is_laa: true,
-            nr_style: 0,
-            nr_style_enabled: false,
-            mfg_multiplier: 4,
-            has_anti_cheat: false,
-        };
-        state.cached_games.push(game.clone());
-        assert!(!state.is_hidden(&game_dir));
-
-        state.hide_game(&game_dir);
-        assert!(state.is_hidden(&game_dir));
-        // Test case and slash insensitivity
-        assert!(state.is_hidden(std::path::Path::new("e:/gog games/being a dik/")));
-        // Cached games should no longer contain it
-        assert_eq!(state.cached_games.len(), 0);
-
-        // Unhide
-        state.unhide_game(&game_dir);
-        assert!(!state.is_hidden(&game_dir));
-    }
-
-    #[test]
-    fn test_base_addons_mandatory_and_custom_addons() {
-        let mut state = AppState::default();
-        // Base add-ons are always active
-        assert!(is_addon_active(&state, "builtin:renodx"));
-        assert!(is_addon_active(&state, "builtin:mfgunlock"));
-        assert!(is_addon_active(&state, "builtin:feeder"));
-        assert!(!is_addon_active(&state, "builtin:overlay"), "Overlay must be inactive");
-
-        // Attempting to toggle off a base add-on is ignored
-        toggle_addon_in_state(&mut state, "builtin:renodx", false);
-        assert!(is_addon_active(&state, "builtin:renodx"), "Base add-ons cannot be deactivated");
-
-        // Custom add-ons can be toggled
-        let custom_id = "C:\\Mods\\reshade\\my_addon.addon64";
-        assert!(!is_addon_active(&state, custom_id));
-        toggle_addon_in_state(&mut state, custom_id, true);
-        assert!(is_addon_active(&state, custom_id));
-        toggle_addon_in_state(&mut state, custom_id, false);
-        assert!(!is_addon_active(&state, custom_id));
-    }
-
-    #[test]
-    fn test_custom_names_persistence() {
-        let mut state = AppState::default();
-        let game_dir = std::path::Path::new(r"E:\Games\CustomGame");
-
-        // Initially none
-        assert_eq!(state.get_custom_name(game_dir), None);
-
-        // Set custom name
-        state.set_custom_name(game_dir, "My Custom Game Title");
-        assert_eq!(state.get_custom_name(game_dir), Some(&"My Custom Game Title".to_string()));
-
-        // Check path normalization (forward slashes and trailing slash)
-        let alt_dir = std::path::Path::new("e:/games/customgame/");
-        assert_eq!(state.get_custom_name(alt_dir), Some(&"My Custom Game Title".to_string()));
-
-        // Test serialization and deserialization
-        let json = serde_json::to_string(&state).expect("serialize");
-        let loaded: AppState = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(loaded.get_custom_name(game_dir), Some(&"My Custom Game Title".to_string()));
-
-        // Empty string resets / removes
-        state.set_custom_name(game_dir, "   ");
-        assert_eq!(state.get_custom_name(game_dir), None);
-
-        state.set_custom_name(game_dir, "Temporary");
-        state.set_custom_name(game_dir, "");
-        assert_eq!(state.get_custom_name(game_dir), None);
-    }
-
-    #[test]
-    fn test_fresh_state_defaults() {
-        let state = AppState::default();
-        assert!(state.run_in_background);
-        assert!(state.rust_theme);
-        assert!(!state.auto_scan_drives);
-        assert!(state.cached_games.is_empty());
-    }
-
-    #[test]
-    fn test_is_path_protected_detection() {
-        assert!(super::is_path_protected(r"C:\Program Files\DLSS 5 Studio"));
-        assert!(super::is_path_protected(r"C:\Program Files (x86)\DLSS 5 Studio"));
-        assert!(super::is_path_protected("C:/Program Files/DLSS 5 Studio"));
-        assert!(super::is_path_protected(r"C:\Windows\System32"));
-        assert!(super::is_path_protected(r"C:\Program Files\WindowsApps\Game"));
-
-        // Unprotected directories
-        assert!(!super::is_path_protected(r"D:\Games\DLSS 5 Studio"));
-        assert!(!super::is_path_protected(r"C:\Games\DLSS 5 Studio"));
-        assert!(!super::is_path_protected(r"E:\Tools\ModManager"));
-    }
-
-    #[test]
-    fn test_resolve_appdata_dir_portable_priority() {
-        let res = super::resolve_appdata_dir_internal(
-            "dlss-studio-portable.exe",
-            Some(std::path::Path::new(r"D:\Games\DLSS 5 Studio")),
-            Some(r#"{"data_dir": "E:\\CustomStorage"}"#),
-            Some(r"C:\ProgramData"),
-            Some(r"C:\Users\Tester\AppData\Roaming"),
-        );
-        assert_eq!(res, std::path::PathBuf::from(r"C:\Users\Tester\AppData\Roaming\dlss-5-studio"));
-    }
-
-    #[test]
-    fn test_resolve_appdata_dir_storage_json_override() {
-        let res = super::resolve_appdata_dir_internal(
-            "dlss-studio.exe",
-            Some(std::path::Path::new(r"C:\Program Files\DLSS 5 Studio")),
-            Some(r#"{"data_dir": "D:\\MyCustomStorage"}"#),
-            Some(r"C:\ProgramData"),
-            Some(r"C:\Users\Tester\AppData\Roaming"),
-        );
-        assert_eq!(res, std::path::PathBuf::from(r"D:\MyCustomStorage"));
-    }
-
-    #[test]
-    fn test_resolve_appdata_dir_unprotected_install_defaults_to_data() {
-        let res = super::resolve_appdata_dir_internal(
-            "dlss-studio.exe",
-            Some(std::path::Path::new(r"D:\Games\DLSS 5 Studio")),
-            None,
-            Some(r"C:\ProgramData"),
-            Some(r"C:\Users\Tester\AppData\Roaming"),
-        );
-        assert_eq!(res, std::path::PathBuf::from(r"D:\Games\DLSS 5 Studio\data"));
-    }
-
-    #[test]
-    fn test_resolve_appdata_dir_protected_install_defaults_to_programdata() {
-        let res = super::resolve_appdata_dir_internal(
-            "dlss-studio.exe",
-            Some(std::path::Path::new(r"C:\Program Files\DLSS 5 Studio")),
-            None,
-            Some(r"C:\ProgramData"),
-            Some(r"C:\Users\Tester\AppData\Roaming"),
-        );
-        assert_eq!(res, std::path::PathBuf::from(r"C:\ProgramData\dlss-5-studio"));
-    }
-
-    #[test]
-    fn test_ago_localized_multilingual() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-
-        // 30 seconds ago
-        let t_just_now = now_ms.saturating_sub(30 * 1000);
-        assert_eq!(super::ago_localized("en", t_just_now), "just now");
-        assert_eq!(super::ago_localized("ru", t_just_now), "только что");
-        assert_eq!(super::ago_localized("de", t_just_now), "gerade eben");
-        assert_eq!(super::ago_localized("zh", t_just_now), "刚刚");
-
-        // 10 minutes ago
-        let t_10m = now_ms.saturating_sub(10 * 60 * 1000);
-        assert_eq!(super::ago_localized("en", t_10m), "10m ago");
-        assert_eq!(super::ago_localized("ru", t_10m), "10 мин назад");
-        assert_eq!(super::ago_localized("de", t_10m), "vor 10 Min.");
-        assert_eq!(super::ago_localized("zh", t_10m), "10分钟前");
-
-        // 2 hours ago
-        let t_2h = now_ms.saturating_sub(2 * 3600 * 1000);
-        assert_eq!(super::ago_localized("en", t_2h), "2h ago");
-        assert_eq!(super::ago_localized("ru", t_2h), "2 ч назад");
-        assert_eq!(super::ago_localized("de", t_2h), "vor 2 Std.");
-        assert_eq!(super::ago_localized("zh", t_2h), "2小时前");
-
-        // 1 day ago (yesterday)
-        let t_yest = now_ms.saturating_sub(25 * 3600 * 1000);
-        assert_eq!(super::ago_localized("en", t_yest), "yesterday");
-        assert_eq!(super::ago_localized("ru", t_yest), "вчера");
-        assert_eq!(super::ago_localized("de", t_yest), "gestern");
-        assert_eq!(super::ago_localized("zh", t_yest), "昨天");
-
-        // 3 days ago
-        let t_3d = now_ms.saturating_sub(3 * 86400 * 1000);
-        assert_eq!(super::ago_localized("en", t_3d), "3d ago");
-        assert_eq!(super::ago_localized("ru", t_3d), "3 дн назад");
-        assert_eq!(super::ago_localized("de", t_3d), "vor 3 Tagen");
-        assert_eq!(super::ago_localized("zh", t_3d), "3天前");
-    }
-
-    #[test]
-    fn test_language_persists_across_serialization() {
-        let default_state = AppState::default();
-        assert!(!default_state.lang.is_empty(), "Default language must not be empty");
-
-        // Explicitly set language
-        let mut custom_state = AppState::default();
-        custom_state.lang = "de".to_string();
-
-        let json = serde_json::to_string(&custom_state).expect("serialize state");
-        let restored: AppState = serde_json::from_str(&json).expect("deserialize state");
-        assert_eq!(restored.lang, "de", "Explicit user language selection must persist across serialization");
-    }
-
-    #[test]
-    fn test_clean_path_separators_mixed_slashes_and_drive_casing() {
-        let raw = std::path::Path::new("d:/program files (x86)/steam\\steamapps\\common\\left 4 dead");
-        let cleaned = super::clean_path_separators(raw);
-        assert_eq!(
-            cleaned,
-            std::path::PathBuf::from(r"D:\program files (x86)\steam\steamapps\common\left 4 dead")
-        );
-
-        let trailing = std::path::Path::new("c:/games/test/");
-        assert_eq!(super::clean_path_separators(trailing), std::path::PathBuf::from(r"C:\games\test"));
-    }
-
-    #[test]
-    fn test_clean_path_separators_edge_cases() {
-        let rel = std::path::Path::new("games/steam/left 4 dead");
-        assert_eq!(super::clean_path_separators(rel), std::path::PathBuf::from(r"games\steam\left 4 dead"));
-
-        let empty = std::path::Path::new("");
-        assert_eq!(super::clean_path_separators(empty), std::path::PathBuf::from(""));
-
-        let drive_only = std::path::Path::new("e:/");
-        assert_eq!(super::clean_path_separators(drive_only), std::path::PathBuf::from("E:"));
-
-        let unc = std::path::Path::new(r"\\server\share/games\steam");
-        assert_eq!(super::clean_path_separators(unc), std::path::PathBuf::from(r"\\server\share\games\steam"));
-    }
+pub fn sync_overlay_preferences(state: &AppState) {
+    let appdata = get_appdata_dir();
+    let pref_file = appdata.join("overlay-preferences.json");
+    let hotkey_code = match state.overlay_hotkey.to_uppercase().as_str() {
+        "F1" => 112, "F2" => 113, "F3" => 114, "F4" => 115, "F5" => 116,
+        "F6" => 117, "F7" => 118, "F8" => 119, "F9" => 120, "F10" => 121,
+        "F11" => 122, "F12" => 123, _ => 119,
+    };
+    let theme_str = match state.overlay_theme.as_str() {
+        "blue" | "azure" => "azure",
+        "purple" | "amethyst" => "amethyst",
+        _ => "emerald",
+    };
+    let payload = serde_json::json!({
+        "hotkey": hotkey_code,
+        "theme": theme_str,
+        "enabled": state.overlay_enabled,
+    });
+    let _ = fs::write(&pref_file, payload.to_string());
 }
+

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.0.0] - 2026-09-25
+
+### Added
+- **10-Foot Big Picture Mode**: Full-screen console interface designed for TVs and handheld devices with dynamic ambient hero backdrops, smooth card transitions, and quick store filtering.
+- **Native Gamepad Navigation**: Pure Rust XInput polling loop supporting Xbox, PlayStation, and Moonlight virtual controllers with dynamic glyph hints, store switching (`LB`/`RB`), and modal navigation.
+- **Couch Preset Tuning & Game Inspector**: Dedicated inline inspector for adjusting Neural Rendering styles, cycling executables (`bg3.exe` vs `bg3_dx11.exe`), toggling Pre-SR multi-pass (`1x`–`3x`), and unlocking 4x Multi-Frame Generation directly with a controller.
+- **Vibepollo / Apollo / Sunshine Streaming Integration**: Automatic detection of local Apollo and Sunshine streaming hosts. A single Settings toggle registers DLSS Studio Big Picture mode (`--big-picture`) in `apps.json` with embedded cover art for instant 1-click streaming from Moonlight clients.
+- **Desktop Window Z-Order & Mouse Demotion**: Zero-flicker return from Big Picture mode with automatic `HWND_NOTOPMOST` window demotion and `ReleaseCapture()` to guarantee host desktop applications remain fully operable.
+- **Unified Multilingual Localization**: Complete 14-language support across Big Picture mode and notification toasts.
+
+---
+
 ## [1.0.6] - 2026-09-18
 
 ### Added

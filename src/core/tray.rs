@@ -22,6 +22,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 const WM_TRAY_CALLBACK: u32 = WM_APP + 101;
 pub const WM_SHOW_WINDOW: u32 = WM_APP + 102;
+pub const WM_SHOW_BIG_PICTURE: u32 = WM_APP + 103;
 const TRAY_ICON_ID: u32 = 1001;
 
 const CMD_OPEN: u32 = 2001;
@@ -29,6 +30,7 @@ const CMD_RUN_ON_STARTUP: u32 = 2002;
 const CMD_EXIT: u32 = 2003;
 
 static SHOW_WINDOW_REQUESTED: AtomicBool = AtomicBool::new(false);
+static SHOW_BIG_PICTURE_REQUESTED: AtomicBool = AtomicBool::new(false);
 static TRAY_HWND: Mutex<Option<isize>> = Mutex::new(None);
 
 pub fn request_show_window() {
@@ -38,6 +40,16 @@ pub fn request_show_window() {
 
 pub fn take_show_window_request() -> bool {
     SHOW_WINDOW_REQUESTED.swap(false, Ordering::SeqCst)
+}
+
+pub fn request_show_big_picture() {
+    crate::core::logger::info("tray", "Show Big Picture requested via IPC / Moonlight");
+    SHOW_BIG_PICTURE_REQUESTED.store(true, Ordering::SeqCst);
+    SHOW_WINDOW_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+pub fn take_show_big_picture_request() -> bool {
+    SHOW_BIG_PICTURE_REQUESTED.swap(false, Ordering::SeqCst)
 }
 
 #[cfg(windows)]
@@ -84,7 +96,8 @@ pub fn trim_working_set() {
 #[cfg(not(windows))]
 pub fn trim_working_set() {}
 
-fn to_wide(s: &str) -> Vec<u16> {
+#[doc(hidden)]
+pub fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
@@ -181,7 +194,8 @@ pub fn set_startup_enabled(enable: bool) -> Result<(), String> {
 
 // ---------------- Tray Management ----------------
 
-fn fill_u16_buf(dest: &mut [u16], text: &str) {
+#[doc(hidden)]
+pub fn fill_u16_buf(dest: &mut [u16], text: &str) {
     let mut i = 0;
     for c in text.encode_utf16() {
         if i >= dest.len() - 1 {
@@ -222,7 +236,7 @@ pub fn show_background_notification() {
 pub fn start_system_tray() {
     std::thread::spawn(move || {
         unsafe {
-            let class_name = w!("DLSS5SwapperTrayClass");
+            let class_name = w!("DLSS5StudioTrayClass");
             let icon = GetModuleHandleW(None)
                 .ok()
                 .and_then(|h| LoadIconW(h, PCWSTR(1 as *const u16)).ok())
@@ -241,7 +255,7 @@ pub fn start_system_tray() {
             let hwnd = CreateWindowExW(
                 WS_EX_TOOLWINDOW,
                 class_name,
-                w!("DLSS5SwapperTrayWindow"),
+                w!("DLSS5StudioTrayWindow"),
                 WS_POPUP,
                 0,
                 0,
@@ -295,7 +309,15 @@ unsafe extern "system" fn tray_wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_SHOW_WINDOW => {
-            request_show_window();
+            if wparam.0 == 1 {
+                request_show_big_picture();
+            } else {
+                request_show_window();
+            }
+            LRESULT(0)
+        }
+        WM_SHOW_BIG_PICTURE => {
+            request_show_big_picture();
             LRESULT(0)
         }
         WM_TRAY_CALLBACK => {
@@ -387,52 +409,3 @@ unsafe fn show_tray_context_menu(hwnd: HWND) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_startup_registry_read() {
-        let _ = is_startup_enabled();
-    }
-
-    #[test]
-    fn test_to_wide_null_termination() {
-        let wide = to_wide("DLSS Studio");
-        assert_eq!(*wide.last().unwrap(), 0);
-        assert_eq!(wide.len(), 12);
-    }
-
-    #[test]
-    fn test_fill_u16_buf_padding() {
-        let mut buf = [0u16; 16];
-        fill_u16_buf(&mut buf, "Test");
-        assert_eq!(buf[0], 'T' as u16);
-        assert_eq!(buf[1], 'e' as u16);
-        assert_eq!(buf[2], 's' as u16);
-        assert_eq!(buf[3], 't' as u16);
-        assert_eq!(buf[4], 0);
-
-        // Overflow truncation test
-        let mut small_buf = [0u16; 4];
-        fill_u16_buf(&mut small_buf, "TestingOverflow");
-        assert_eq!(small_buf[3], 0);
-    }
-
-    #[test]
-    fn test_show_window_request_flag_lifecycle() {
-        assert!(!take_show_window_request());
-        request_show_window();
-        assert!(take_show_window_request());
-        assert!(!take_show_window_request());
-    }
-
-    #[test]
-    fn test_set_startup_enabled_roundtrip() {
-        let initial = is_startup_enabled();
-        let res = set_startup_enabled(initial);
-        if res.is_ok() {
-            assert_eq!(is_startup_enabled(), initial);
-        }
-    }
-}

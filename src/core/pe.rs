@@ -13,13 +13,14 @@ pub struct PeInfo {
     pub is_laa: bool,
     pub version: Option<String>,
     pub imports: Vec<String>,
+    pub exports: Vec<String>,
 }
 
 pub fn inspect_pe<P: AsRef<Path>>(path: P) -> Option<PeInfo> {
     let map = FileMap::open(path.as_ref()).ok()?;
     let file = PeFile::from_bytes(map.as_ref()).ok()?;
 
-    let (bitness, is_laa, imports) = match file {
+    let (bitness, is_laa, imports, exports) = match file {
         Wrap::T32(pe32) => {
             let mut list = Vec::new();
             if let Ok(import_dir) = pe32.imports() {
@@ -29,8 +30,18 @@ pub fn inspect_pe<P: AsRef<Path>>(path: P) -> Option<PeInfo> {
                     }
                 }
             }
+            let mut exp_list = Vec::new();
+            if let Ok(exports) = pe32.exports() {
+                if let Ok(by) = exports.by() {
+                    for (name_res, _) in by.iter_names() {
+                        if let Ok(name) = name_res {
+                            exp_list.push(name.to_str().unwrap_or("").to_string());
+                        }
+                    }
+                }
+            }
             let is_laa = (pe32.file_header().Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0;
-            (32, is_laa, list)
+            (32, is_laa, list, exp_list)
         }
         Wrap::T64(pe64) => {
             let mut list = Vec::new();
@@ -41,7 +52,17 @@ pub fn inspect_pe<P: AsRef<Path>>(path: P) -> Option<PeInfo> {
                     }
                 }
             }
-            (64, true, list)
+            let mut exp_list = Vec::new();
+            if let Ok(exports) = pe64.exports() {
+                if let Ok(by) = exports.by() {
+                    for (name_res, _) in by.iter_names() {
+                        if let Ok(name) = name_res {
+                            exp_list.push(name.to_str().unwrap_or("").to_string());
+                        }
+                    }
+                }
+            }
+            (64, true, list, exp_list)
         }
     };
 
@@ -52,6 +73,7 @@ pub fn inspect_pe<P: AsRef<Path>>(path: P) -> Option<PeInfo> {
         is_laa,
         version,
         imports,
+        exports,
     })
 }
 
@@ -309,104 +331,51 @@ pub fn is_optiscaler_or_proxy<P: AsRef<Path>>(path: P) -> bool {
     !find_markers(p, &markers).is_empty()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Inspects an existing sl.interposer.dll to determine if it belongs to the legacy Streamline 1.x ABI.
+/// Legacy 1.x titles (such as A Plague Tale: Requiem) rely on 7 export functions that NVIDIA
+/// completely removed in Streamline 2.x: slGetFeatureSettings, slGetFeatureConfiguration, slGetHooks, etc.
+pub fn is_legacy_streamline_1x<P: AsRef<Path>>(path: P) -> bool {
+    let p = path.as_ref();
+    if !p.is_file() {
+        return false;
+    }
 
-    #[test]
-    fn test_is_optiscaler_or_proxy_with_marker() {
-        let temp_dir = std::env::temp_dir().join(format!("pe_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()));
-        std::fs::create_dir_all(&temp_dir).unwrap();
-        let dummy_dll = temp_dir.join("dxgi.dll");
-
-        // Plain binary without markers
-        std::fs::write(&dummy_dll, vec![0u8; 1024]).unwrap();
-        assert!(!is_optiscaler_or_proxy(&dummy_dll));
-
-        // Binary with OptiScaler marker
-        let mut with_marker = vec![0u8; 100_000];
-        with_marker[50_000..50_010].copy_from_slice(b"OptiScaler");
-        std::fs::write(&dummy_dll, with_marker).unwrap();
-        assert!(is_optiscaler_or_proxy(&dummy_dll));
-
-        // Binary with Streamline marker
-        let mut with_streamline = vec![0u8; 10_000];
-        with_streamline[1000..1010].copy_from_slice(b"Streamline");
-        std::fs::write(&dummy_dll, with_streamline).unwrap();
-        assert!(is_optiscaler_or_proxy(&dummy_dll));
-
-        // Missing file
-        assert!(!is_optiscaler_or_proxy(temp_dir.join("missing.dll")));
-        assert!(inspect_pe(temp_dir.join("missing.dll")).is_none());
-
-        let (mentions, ver, addon) = is_reshade_dll(&dummy_dll);
-        assert!(!mentions);
-        assert!(ver.is_none());
-        assert!(!addon);
-
-        let reshade_payload = Path::new("payload/reshade-vulkan/ReShade64.dll");
-        let reshade_cached = crate::core::downloader::get_components_root().join("reshade-vulkan/ReShade64.dll");
-        let target = if reshade_payload.is_file() { Some(reshade_payload) } else if reshade_cached.is_file() { Some(reshade_cached.as_path()) } else { None };
-        if let Some(target_p) = target {
-            let (is_res, _, has_add) = is_reshade_dll(target_p);
-            assert!(is_res);
-            assert!(has_add);
+    if let Some(info) = inspect_pe(p) {
+        // Tier 1: Check PE exports for legacy signatures (100% deterministic)
+        if info.exports.iter().any(|e| {
+            e == "slGetFeatureSettings"
+                || e == "slGetFeatureConfiguration"
+                || e == "slGetHooks"
+                || e == "slGetNumHooks"
+                || e == "slIsFeatureEnabled"
+                || e == "slSetFeatureConstants"
+                || e == "slSetFeatureEnabled"
+        }) {
+            return true;
         }
 
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        // Tier 2: Check PE file version (Major version < 2)
+        if let Some(ref ver) = info.version {
+            let digits: String = ver.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(major) = digits.parse::<u32>() {
+                if major < 2 && major > 0 {
+                    return true;
+                }
+            }
+        }
     }
 
-    #[test]
-    fn test_large_address_aware_inspection_and_toggle() {
-        let temp_dir = std::env::temp_dir().join(format!("pe_laa_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        std::fs::create_dir_all(&temp_dir).unwrap();
-        let exe_path = temp_dir.join("TestGame32.exe");
-
-        // Construct minimal valid PE32 with Characteristics = 0x0103 (LAA = false)
-        let mut data = vec![0u8; 512];
-        data[0] = b'M';
-        data[1] = b'Z';
-        let pe_offset: u32 = 0x80;
-        data[0x3C..0x40].copy_from_slice(&pe_offset.to_le_bytes());
-
-        // PE signature
-        data[0x80..0x84].copy_from_slice(b"PE\0\0");
-        // Machine = i386 (0x014C)
-        data[0x84..0x86].copy_from_slice(&0x014Cu16.to_le_bytes());
-        // NumberOfSections = 1
-        data[0x86..0x88].copy_from_slice(&1u16.to_le_bytes());
-        // SizeOfOptionalHeader = 0xE0
-        data[0x94..0x96].copy_from_slice(&0x00E0u16.to_le_bytes());
-        // Characteristics = 0x0103 (IMAGE_FILE_32BIT_MACHINE | IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_RELOCS_STRIPPED)
-        data[0x96..0x98].copy_from_slice(&0x0103u16.to_le_bytes());
-        // Optional header magic = 0x010B (PE32)
-        data[0x98..0x9A].copy_from_slice(&0x010Bu16.to_le_bytes());
-
-        std::fs::write(&exe_path, &data).unwrap();
-
-        assert!(!is_large_address_aware(&exe_path), "Initial binary must not be LAA");
-        let pe_info = inspect_pe(&exe_path).expect("Must inspect synthetic PE");
-        assert_eq!(pe_info.bitness, 32);
-        assert!(!pe_info.is_laa, "PeInfo must report is_laa = false");
-
-        // Enable LAA
-        let changed = set_large_address_aware(&exe_path, true).expect("set_large_address_aware(true) must succeed");
-        assert!(changed, "Must report change made");
-        assert!(is_large_address_aware(&exe_path), "Binary must now be LAA");
-
-        let pe_info_after = inspect_pe(&exe_path).expect("Must inspect synthetic PE after LAA patch");
-        assert!(pe_info_after.is_laa, "PeInfo must report is_laa = true after patch");
-
-        // Re-enabling when already enabled should be a no-op
-        let changed2 = set_large_address_aware(&exe_path, true).expect("Re-enabling must succeed");
-        assert!(!changed2, "Should return false if already enabled");
-
-        // Disable LAA
-        let changed3 = set_large_address_aware(&exe_path, false).expect("Disabling must succeed");
-        assert!(changed3);
-        assert!(!is_large_address_aware(&exe_path));
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
+    // Tier 3: Binary string scan fallback for raw export names
+    if let Ok(bytes) = std::fs::read(p) {
+        if fast_find(&bytes, b"slGetFeatureSettings\0")
+            || fast_find(&bytes, b"slGetFeatureConfiguration\0")
+            || fast_find(&bytes, b"slGetHooks\0")
+        {
+            return true;
+        }
     }
+
+    false
 }
+
 

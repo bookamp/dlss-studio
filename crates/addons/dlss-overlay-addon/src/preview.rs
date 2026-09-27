@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::thread;
-use crate::core::overlay_bridge::{
+use crate::bridge::{
     render_overlay_surface, handle_input_packet, OverlayUiState, PANEL_WIDTH, PANEL_HEIGHT
 };
 
@@ -267,9 +267,9 @@ pub fn run_overlay_preview_window() {
             initial_state.frametime_ms = 7.2;
             initial_state.has_mfg = true;
             initial_state.has_presr = true;
-            let app_state = crate::core::state::load_state();
+            let theme = crate::bridge::get_active_overlay_theme();
 
-            if let Some((r, g, b)) = match app_state.overlay_theme.as_str() {
+            if let Some((r, g, b)) = match theme.as_str() {
                 "blue" | "azure" => Some((0x4a, 0xa8, 0xee)),
                 "purple" | "amethyst" => Some((0xb4, 0x5d, 0xea)),
                 _ => Some((0xd4, 0xff, 0x00)),

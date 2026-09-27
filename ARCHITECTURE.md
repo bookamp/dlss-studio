@@ -34,7 +34,7 @@ flowchart TB
     end
 
     subgraph Storage["Filesystem & Mod Target Trees"]
-        AppData["%LOCALAPPDATA%\DLSS5-Swapper<br/>(State, History, Layers, Components)"]
+        AppData["%APPDATA%\dlss-5-studio<br/>(State, History, Layers, Components)"]
         Payloads["./payload/ & Local Cache<br/>(OptiScaler, ReShade, RenoDX, RTXMFG)"]
         GameTarget["Target Game Directory / mod_root<br/>(Executable, Proxies, Shaders, Backups)"]
         BackupPool["_DLSS5_Backup/originals/&lt;ts&gt;/<br/>(True Vanilla Game Backups & Manifests)"]
@@ -142,7 +142,7 @@ sequenceDiagram
         CDN-->>DL: Binary stream
         DL->>DL: Compute SHA-256 checksum
         alt Hash matches verified constant
-            DL->>FS: Write binary to %LOCALAPPDATA%\DLSS5-Swapper\components\...
+            DL->>FS: Write binary to %APPDATA%\dlss-5-studio\components\...
         else Hash Mismatch
             DL-->>Deploy: Abort installation (Integrity Error)
         end
@@ -225,7 +225,7 @@ DLSS Studio leverages standard Windows DLL search order (`LoadLibrary` / applica
 
 ### B. Vulkan Implicit Layers
 On Vulkan titles (e.g., *Baldur's Gate 3* `bg3.exe`), Windows does not load DLLs via directory proxying. Instead, DLSS Studio manages a native Vulkan Implicit Layer:
-1. Manifest files (`VkLayer_feed_vk.json` and `ReShade64.json`) are maintained in `%LOCALAPPDATA%\DLSS5-Swapper\vulkan_layers\`.
+1. Manifest files (`VkLayer_feed_vk.json` and `ReShade64.json`) are maintained in `%APPDATA%\dlss-5-studio\vulkan_layers\`.
 2. The manifest path is registered in Windows Registry under:
    `HKCU\SOFTWARE\Khronos\Vulkan\ImplicitLayers` with `DWORD = 0`.
 3. An internal isolation file, `registered_games.json`, tracks game directories authorized to load the layer.
