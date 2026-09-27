@@ -46,7 +46,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run Test Suite
-        run: cargo test --verbose
+        run: cargo test --workspace --verbose
 
       - name: Build Release Binaries (Setup & Portable)
         shell: powershell
@@ -62,8 +62,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo build --release --bin dlss-studio-setup
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --release -p dlss-mip-addon
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item -Path "target\release\dlss-studio.exe" -Destination "target\release\dlss-studio-v$version-portable.exe" -Force
           Copy-Item -Path "target\release\dlss-studio-setup.exe" -Destination "target\release\dlss-studio-v$version-setup.exe" -Force
+          Copy-Item -Path "target\release\dlss_mip_addon.dll" -Destination "target\release\dlss-mip-fix.addon64" -Force
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
@@ -72,6 +75,7 @@ jobs:
           path: |
             target/release/dlss-studio-v*-portable.exe
             target/release/dlss-studio-v*-setup.exe
+            target/release/dlss-mip-fix.addon64
           if-no-files-found: error
 
       - name: Prepare Release Notes & Commit Comments
@@ -154,6 +158,7 @@ jobs:
           gh release create "$TAG" \
             target/release/dlss-studio-v*-setup.exe \
             target/release/dlss-studio-v*-portable.exe \
+            target/release/dlss-mip-fix.addon64 \
             --title "$TITLE" \
             --notes-file "$BODY_FILE" \
             --latest

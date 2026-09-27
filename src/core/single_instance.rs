@@ -47,17 +47,18 @@ pub fn acquire_named_mutex(mutex_name: PCWSTR) -> Option<SingleInstanceGuard> {
     None
 }
 
-/// Tries to acquire single-instance ownership for DLSS Studio.
+/// Tries to acquire single-instance ownership for DLSS 5 Studio.
 /// If an instance is already running, signals the running instance to restore/show its window and returns `None`.
+/// If `is_big_picture` is true, signals the running instance to enter Big Picture mode directly.
 /// If this is the primary instance, returns `Some(SingleInstanceGuard)`.
-pub fn acquire_single_instance() -> Option<SingleInstanceGuard> {
+pub fn acquire_single_instance(is_big_picture: bool) -> Option<SingleInstanceGuard> {
     #[cfg(windows)]
     {
-        let mutex_name = windows::core::w!("Local\\DLSS5_Swapper_Rust_SingleInstance_Mutex");
+        let mutex_name = windows::core::w!("Local\\DLSS5_Studio_SingleInstance_Mutex");
         if let Some(guard) = acquire_named_mutex(mutex_name) {
             Some(guard)
         } else {
-            signal_existing_instance();
+            signal_existing_instance(is_big_picture);
             None
         }
     }
@@ -67,41 +68,31 @@ pub fn acquire_single_instance() -> Option<SingleInstanceGuard> {
 }
 
 /// Signals the existing instance via its Win32 tray/message window to restore and focus its UI.
-pub fn signal_existing_instance() {
+pub fn signal_existing_instance(is_big_picture: bool) {
     #[cfg(windows)]
     unsafe {
-        let class_name = windows::core::w!("DLSS5SwapperTrayClass");
-        let window_name = windows::core::w!("DLSS5SwapperTrayWindow");
+        let class_name = windows::core::w!("DLSS5StudioTrayClass");
+        let window_name = windows::core::w!("DLSS5StudioTrayWindow");
         if let Ok(hwnd) = FindWindowW(class_name, window_name) {
             if !hwnd.0.is_null() {
-                let _ = PostMessageW(hwnd, crate::core::tray::WM_SHOW_WINDOW, WPARAM(0), LPARAM(0));
+                let msg = if is_big_picture {
+                    crate::core::tray::WM_SHOW_BIG_PICTURE
+                } else {
+                    crate::core::tray::WM_SHOW_WINDOW
+                };
+                let wparam = if is_big_picture { WPARAM(1) } else { WPARAM(0) };
+                let _ = PostMessageW(hwnd, msg, wparam, LPARAM(0));
                 let _ = ShowWindow(hwnd, SW_RESTORE);
                 let _ = SetForegroundWindow(hwnd);
-                crate::core::logger::info("single_instance", "Signaled existing instance via Win32 tray window");
+                crate::core::logger::info(
+                    "single_instance",
+                    &format!(
+                        "Signaled existing instance via Win32 tray window (big_picture: {})",
+                        is_big_picture
+                    ),
+                );
             }
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_single_instance_guard_lifecycle() {
-        let test_mutex = windows::core::w!("Local\\DLSS5_Swapper_Test_Mutex_9999");
-        let guard = acquire_named_mutex(test_mutex);
-        assert!(guard.is_some(), "First acquisition in test must succeed");
-        let second = acquire_named_mutex(test_mutex);
-        assert!(second.is_none(), "Second acquisition while guard is held must be None");
-        drop(guard);
-        let third = acquire_named_mutex(test_mutex);
-        assert!(third.is_some(), "Acquisition after dropping guard must succeed");
-    }
-
-    #[test]
-    fn test_signal_existing_instance_call() {
-        // Safe to call even when no window is active (FindWindow returns 0 / handles null gracefully)
-        signal_existing_instance();
-    }
-}

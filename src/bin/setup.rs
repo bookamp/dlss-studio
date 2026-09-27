@@ -8,8 +8,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-#[path = "../core/i18n.rs"]
-mod i18n;
+use dlss_studio::core::i18n;
 
 fn detect_initial_language() -> String {
     // 1. Check existing library.json in existing installation directory (if update/reinstall)
@@ -123,11 +122,24 @@ fn main() {
         // so that Windows unlocks uninstall.exe and allows the entire directory to be purged!
         if !is_worker {
             let temp_dir = std::env::temp_dir();
-            let temp_worker = temp_dir.join("dlss_studio_uninstall.exe");
+            let pid = std::process::id();
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let temp_worker = temp_dir.join(format!("dlss_studio_uninstall_{}_{}.exe", pid, timestamp));
+
+            // Also clean up any legacy fixed uninstaller worker in %TEMP%
+            let legacy_worker = temp_dir.join("dlss_studio_uninstall.exe");
+            if legacy_worker.exists() {
+                let _ = std::fs::remove_file(&legacy_worker);
+            }
 
             if let Some(ref curr) = curr_exe {
                 if curr != &temp_worker {
-                    let _ = std::fs::copy(curr, &temp_worker);
+                    if let Err(e) = std::fs::copy(curr, &temp_worker) {
+                        eprintln!("Failed to copy temporary uninstaller worker: {}", e);
+                    }
                 }
             }
 
@@ -796,6 +808,7 @@ fn UninstallApp(target_dir: PathBuf) -> Element {
                         onmousedown: move |e| { e.stop_propagation(); },
                         onclick: move |e| {
                             e.stop_propagation();
+                            schedule_temp_worker_cleanup();
                             dioxus::desktop::window().close();
                         },
                         svg { style: "width: 15px; height: 15px; fill: currentColor;", view_box: "0 0 24 24",
@@ -850,6 +863,7 @@ fn UninstallApp(target_dir: PathBuf) -> Element {
                             button {
                                 class: "btn-cancel",
                                 onclick: move |_| {
+                                    schedule_temp_worker_cleanup();
                                     dioxus::desktop::window().close();
                                 },
                                 "{i18n::t(&current_lang.read(), \"uninstall_btn_cancel\")}"
@@ -930,6 +944,7 @@ fn UninstallApp(target_dir: PathBuf) -> Element {
                             button {
                                 class: "btn-install",
                                 onclick: move |_| {
+                                    schedule_temp_worker_cleanup();
                                     dioxus::desktop::window().close();
                                 },
                                 "{i18n::t(&current_lang.read(), \"setup_btn_close\")}"
@@ -952,6 +967,7 @@ fn UninstallApp(target_dir: PathBuf) -> Element {
                             button {
                                 class: "btn-cancel",
                                 onclick: move |_| {
+                                    schedule_temp_worker_cleanup();
                                     dioxus::desktop::window().close();
                                 },
                                 "{i18n::t(&current_lang.read(), \"setup_btn_close\")}"
@@ -1285,7 +1301,7 @@ fn SetupApp() -> Element {
                                 if is_reinstall {
                                     "{i18n::t(&current_lang.read(), \"setup_btn_update\")}"
                                 } else {
-                                    "{i18n::t(&current_lang.read(), \"setup_btn_install_now\")}"
+                                    "{i18n::t(&current_lang.read(), \"setup_btn_install\")}"
                                 }
                             }
                             button {
@@ -1374,8 +1390,10 @@ fn create_shortcut(target_exe: &Path, shortcut_path: &Path, description: &str) -
             .map_err(|e| format!("CoCreateInstance ShellLink failed: {:?}", e))?;
 
         let target_str = target_exe.to_string_lossy().to_string();
-        link.SetPath(&HSTRING::from(target_str))
+        link.SetPath(&HSTRING::from(target_str.clone()))
             .map_err(|e| format!("SetPath failed: {:?}", e))?;
+
+        let _ = link.SetIconLocation(&HSTRING::from(target_str.clone()), 0);
 
         if let Some(parent) = target_exe.parent() {
             let working_dir = parent.to_string_lossy().to_string();
@@ -1738,6 +1756,17 @@ fn perform_native_uninstall_worker(target_install_dir: &Path, delete_appdata: bo
     unregister_uninstall_entry();
     let _ = crate_startup_uninstall_cleanup();
 
+    // Read custom storage directory from storage.json before removing target_install_dir
+    let custom_storage_dir: Option<PathBuf> = if target_install_dir.exists() {
+        let storage_file = target_install_dir.join("storage.json");
+        std::fs::read_to_string(&storage_file)
+            .ok()
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+            .and_then(|val| val.get("data_dir").and_then(|d| d.as_str()).map(PathBuf::from))
+    } else {
+        None
+    };
+
     // 4. Purge the entire target installation directory
     if target_install_dir.exists() {
         for _ in 0..5 {
@@ -1759,6 +1788,11 @@ fn perform_native_uninstall_worker(target_install_dir: &Path, delete_appdata: bo
 
     // 5. Cleanup user cache, downloaded components, and preferences if requested
     if delete_appdata {
+        if let Some(ref custom_dir) = custom_storage_dir {
+            if custom_dir.exists() && custom_dir != target_install_dir && !target_install_dir.starts_with(custom_dir) {
+                let _ = std::fs::remove_dir_all(custom_dir);
+            }
+        }
         if let Ok(appdata) = std::env::var("APPDATA") {
             let user_dir = PathBuf::from(appdata).join("dlss-5-studio");
             if user_dir.exists() {
@@ -1774,6 +1808,12 @@ fn perform_native_uninstall_worker(target_install_dir: &Path, delete_appdata: bo
     }
 
     // 6. Schedule self-deletion of the temporary worker binary from %TEMP%
+    schedule_temp_worker_cleanup();
+
+    Ok(())
+}
+
+fn schedule_temp_worker_cleanup() {
     if let Ok(curr) = std::env::current_exe() {
         if curr.starts_with(std::env::temp_dir()) {
             let _ = std::process::Command::new("cmd.exe")
@@ -1785,8 +1825,6 @@ fn perform_native_uninstall_worker(target_install_dir: &Path, delete_appdata: bo
                 .spawn();
         }
     }
-
-    Ok(())
 }
 
 fn crate_startup_uninstall_cleanup() -> Result<(), ()> {

@@ -17,19 +17,15 @@ fn main() {
         if let Err(e) = res.compile() {
             eprintln!("cargo:warning=Failed to compile Windows resource: {}", e);
         }
+        println!("cargo:rerun-if-changed=assets/icon.ico");
+        println!("cargo:rerun-if-changed=assets/icon.png");
+        println!("cargo:rerun-if-changed=assets/icon_64.rgba");
+        println!("cargo:rerun-if-changed=assets/icon_32.rgba");
     }
 
     let out_dir = std::env::var("OUT_DIR").unwrap_or_else(|_| ".".to_string());
 
     // Compress embedded payloads to minimize binary footprint
-    let addon_src = std::path::Path::new("assets/dlss5-lab-overlay.addon64");
-    if addon_src.exists() {
-        let raw = std::fs::read(addon_src).expect("Failed to read dlss5-lab-overlay.addon64");
-        let compressed = miniz_oxide::deflate::compress_to_vec(&raw, 10);
-        let dest = std::path::Path::new(&out_dir).join("dlss5-lab-overlay.addon64.deflate");
-        std::fs::write(&dest, &compressed).expect("Failed to write compressed overlay addon");
-        println!("cargo:rerun-if-changed=assets/dlss5-lab-overlay.addon64");
-    }
 
     let css_src = std::path::Path::new("assets/style.css");
     if css_src.exists() {

@@ -1,0 +1,33 @@
+[package]
+name = "dlss-mip-addon"
+version = "1.0.0"
+edition = "2021"
+description = "Pure Rust D3D12 Mip-Chain Companion Add-on for DLSS Studio"
+license = "MIT"
+autotests = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "dlss_mip_addon"
+
+[[test]]
+name = "addon"
+path = "tests/main.rs"
+
+[dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_System_SystemServices",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Diagnostics_Debug",
+] }
+windows = { version = "0.58", features = [
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi_Common",
+] }
+
+
+

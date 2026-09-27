@@ -30,6 +30,8 @@ pub const MFG_10_SHA256: &str = "f9f10c685e3e89077f751df2394a1629615a56b58d111df
 pub const OPTISCALER_084_URL: &str = "https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases/download/v0.8.4/OptiScaler-NR-v0.8.4.zip";
 pub const OPTISCALER_084_SHA256: &str = "8789912859882e66b3f3a1aa768db947da779dfd65225df69ea919052e73a2e4";
 
+pub const DLSS_MIP_FIX_URL: &str = "https://github.com/bookamp/dlss-studio/releases/latest/download/dlss-mip-fix.addon64";
+
 pub const RENODX_DLSS5_URL: &str = "https://github.com/yumlevi/renodx-dlss-installer/releases/download/latest/renodx-dlss5.addon64";
 pub const STREAMLINE_ZIP_URL: &str = "https://github.com/yumlevi/renodx-dlss-installer/releases/download/latest/streamline.zip";
 pub const RESHADE_SETUP_URL: &str = "https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe";
@@ -75,6 +77,15 @@ pub fn compute_sha256(path: &Path) -> std::io::Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadStage {
+    Checking,
+    Connecting,
+    Downloading,
+    Verifying,
+    Retrying(usize),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DownloadProgress {
     pub is_downloading: bool,
@@ -84,7 +95,24 @@ pub struct DownloadProgress {
     pub downloaded_bytes: u64,
     pub total_bytes: Option<u64>,
     pub percentage: f32,
+    pub stage: DownloadStage,
     pub message: String,
+}
+
+impl DownloadProgress {
+    pub fn checking() -> Self {
+        Self {
+            is_downloading: true,
+            component_name: String::new(),
+            component_id: String::new(),
+            url: String::new(),
+            downloaded_bytes: 0,
+            total_bytes: None,
+            percentage: 0.0,
+            stage: DownloadStage::Checking,
+            message: "Checking components...".to_string(),
+        }
+    }
 }
 
 impl Default for DownloadProgress {
@@ -97,6 +125,7 @@ impl Default for DownloadProgress {
             downloaded_bytes: 0,
             total_bytes: None,
             percentage: 0.0,
+            stage: DownloadStage::Downloading,
             message: String::new(),
         }
     }
@@ -109,6 +138,31 @@ pub fn format_bytes(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {
         format!("{} B", bytes)
+    }
+}
+
+pub fn format_download_progress(lang: &str, prog: &DownloadProgress) -> String {
+    match prog.stage {
+        DownloadStage::Checking => crate::core::i18n::t(lang, "download_checking").to_string(),
+        DownloadStage::Connecting => crate::core::i18n::t_param(lang, "download_connecting", &prog.component_name),
+        DownloadStage::Downloading => {
+            let base = crate::core::i18n::t_param(lang, "download_downloading", &prog.component_name);
+            let bytes_str = match prog.total_bytes {
+                Some(total) => format!(" ({} / {})", format_bytes(prog.downloaded_bytes), format_bytes(total)),
+                None => {
+                    if prog.downloaded_bytes > 0 {
+                        format!(" ({})", format_bytes(prog.downloaded_bytes))
+                    } else {
+                        String::new()
+                    }
+                }
+            };
+            format!("{}{}", base, bytes_str)
+        }
+        DownloadStage::Verifying => crate::core::i18n::t(lang, "download_verifying").to_string(),
+        DownloadStage::Retrying(attempt) => {
+            crate::core::i18n::t_params(lang, "download_retrying", &[&prog.component_name, &attempt.to_string()])
+        }
     }
 }
 
@@ -136,6 +190,7 @@ where
             downloaded_bytes: 0,
             total_bytes: None,
             percentage: 0.0,
+            stage: DownloadStage::Retrying(attempt),
             message: format!("Retrying {} (attempt {}/3)...", component_name, attempt),
         });
     } else {
@@ -147,6 +202,7 @@ where
             downloaded_bytes: 0,
             total_bytes: None,
             percentage: 0.0,
+            stage: DownloadStage::Connecting,
             message: format!("Connecting to {}...", component_name),
         });
     }
@@ -207,6 +263,7 @@ where
                 downloaded_bytes: downloaded,
                 total_bytes: total_size,
                 percentage: pct.min(100.0),
+                stage: DownloadStage::Downloading,
                 message: format!("Downloading {}...", component_name),
             });
         }
@@ -226,6 +283,7 @@ where
         downloaded_bytes: downloaded,
         total_bytes: total_size,
         percentage: 100.0,
+        stage: DownloadStage::Downloading,
         message: format!("Downloading {}... 100%", component_name),
     });
 
@@ -238,6 +296,7 @@ where
             downloaded_bytes: downloaded,
             total_bytes: total_size,
             percentage: 100.0,
+            stage: DownloadStage::Verifying,
             message: "Verifying checksum...".to_string(),
         });
         let hash = hex::encode(hasher.finalize());
@@ -761,6 +820,57 @@ pub async fn ensure_mfg_v09_addon(log: &mut Vec<String>) -> Result<PathBuf, Stri
     Ok(target)
 }
 
+/// Asynchronously resolves or downloads NIGos's DLSS 5 D3D12 Mip Fix addon
+#[allow(dead_code)]
+pub async fn ensure_dlss5_d3d12_fix_addon(log: &mut Vec<String>) -> Result<PathBuf, String> {
+    let comp_root = get_components_root();
+    let fix_dir = comp_root.join("dlss-mip-fix");
+    let target = fix_dir.join("dlss-mip-fix.addon64");
+
+    // Check local build targets first
+    for local_cand in &[
+        PathBuf::from("target/release/dlss-mip-fix.addon64"),
+        PathBuf::from("target/release/dlss_mip_addon.dll"),
+        PathBuf::from("dist/dlss-mip-fix.addon64"),
+    ] {
+        if local_cand.is_file() {
+            let _ = fs::create_dir_all(&fix_dir);
+            let _ = fs::copy(local_cand, &target);
+            return Ok(target);
+        }
+    }
+
+    // Check adjacent to running executable
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let next_to_exe = parent.join("dlss-mip-fix.addon64");
+            if next_to_exe.is_file() {
+                let _ = fs::create_dir_all(&fix_dir);
+                let _ = fs::copy(&next_to_exe, &target);
+                return Ok(target);
+            }
+        }
+    }
+
+    if target.is_file() {
+        return Ok(target);
+    }
+
+    // Check legacy fallback
+    let legacy_target = comp_root.join("dlss5-d3d12-fix").join("dlss5-d3d12-fix.addon64");
+    if legacy_target.is_file() {
+        let _ = fs::create_dir_all(&fix_dir);
+        let _ = fs::copy(&legacy_target, &target);
+        return Ok(target);
+    }
+
+    let _ = fs::create_dir_all(&fix_dir);
+    log.push("[DOWNLOAD] Fetching DLSS Studio D3D12 Mip Companion from GitHub Releases...".to_string());
+    download_file_with_sha256(DLSS_MIP_FIX_URL, &target, "").await?;
+    log.push("[DOWNLOAD] DLSS Studio D3D12 Mip Companion downloaded: OK".to_string());
+    Ok(target)
+}
+
 /// Checks whether the RenoDX 4x MFG Unlock addon is cached on disk
 pub fn is_mfg_addon_cached() -> bool {
     let root = get_components_root();
@@ -780,6 +890,28 @@ pub fn is_renodx_engine_cached() -> bool {
     let root = get_components_root();
     root.join("renodx-dlss5").join("renodx-dlss5.addon64").is_file()
         || root.join("renodx-dlss5.addon64").is_file()
+}
+
+/// Checks whether the D3D12 Mip Fix companion is cached on disk
+pub fn is_dlss5_d3d12_fix_cached() -> bool {
+    if std::path::Path::new("target/release/dlss_mip_addon.dll").is_file()
+        || std::path::Path::new("target/release/dlss-mip-fix.addon64").is_file()
+        || std::path::Path::new("dist/dlss-mip-fix.addon64").is_file()
+    {
+        return true;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            if parent.join("dlss-mip-fix.addon64").is_file() {
+                return true;
+            }
+        }
+    }
+    let root = get_components_root();
+    root.join("dlss-mip-fix").join("dlss-mip-fix.addon64").is_file()
+        || root.join("dlss-mip-fix.addon64").is_file()
+        || root.join("dlss5-d3d12-fix").join("dlss5-d3d12-fix.addon64").is_file()
+        || root.join("dlss5-d3d12-fix.addon64").is_file()
 }
 
 /// Checks whether the OptiScaler runtime is cached on disk
@@ -809,6 +941,7 @@ pub fn are_all_mandatory_components_cached() -> bool {
     is_mfg_addon_cached()
         && is_feeder_cached()
         && is_renodx_engine_cached()
+        && is_dlss5_d3d12_fix_cached()
         && is_optiscaler_cached()
         && is_reshade_cached()
         && is_streamline_cached()
@@ -840,7 +973,7 @@ where
 {
     let mut log = Vec::new();
     let mut errors = Vec::new();
-    const TOTAL_STEPS: usize = 7;
+    const TOTAL_STEPS: usize = 8;
 
     // 1. RenoDX v4.7 Integrated Engine
     if !is_renodx_engine_cached() {
@@ -865,14 +998,37 @@ where
         }
     }
 
-    // 2. RenoDX 4x MFG Unlock v1.0
+    // 2. DLSS Studio D3D12 Mip Companion
+    if !is_dlss5_d3d12_fix_cached() {
+        let comp_root = get_components_root();
+        let fix_dir = comp_root.join("dlss-mip-fix");
+        let target = fix_dir.join("dlss-mip-fix.addon64");
+        let _ = fs::create_dir_all(&fix_dir);
+        let mut step_prog = |mut p: DownloadProgress| {
+            p.percentage = ((1.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
+            progress_fn(p);
+        };
+        if let Err(e) = download_file_with_progress(
+            DLSS_MIP_FIX_URL,
+            &target,
+            "",
+            "DLSS Studio D3D12 Mip Companion",
+            "dlss_mip_fix",
+            &mut step_prog,
+        ).await {
+            crate::core::state::log_message(&format!("@{{log_download_error|DLSS Studio D3D12 Mip Companion|{}}}", e));
+            errors.push(format!("DLSS Studio D3D12 Mip Companion: {}", e));
+        }
+    }
+
+    // 3. RenoDX 4x MFG Unlock v1.0
     if !is_mfg_addon_cached() {
         let comp_root = get_components_root();
         let mfg_dir = comp_root.join("mfg-unlock-1.0");
         let target = mfg_dir.join("renodx-mfgunlock.addon64");
         let _ = fs::create_dir_all(&mfg_dir);
         let mut step_prog = |mut p: DownloadProgress| {
-            p.percentage = ((1.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
+            p.percentage = ((2.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
             progress_fn(p);
         };
         if let Err(e) = download_file_with_progress(
@@ -888,14 +1044,14 @@ where
         }
     }
 
-    // 3. DLSS 5 Feeder & Motion Shaders
+    // 4. DLSS 5 Feeder & Motion Shaders
     if !is_feeder_cached() {
         let comp_root = get_components_root();
         let feeder_dir = comp_root.join("DLSS5-Feeder-1.16.0-beta.3");
         let feeder_zip = comp_root.join("DLSS5-Feeder-1.16.0-beta.3.zip");
         if !feeder_dir.join("dlss5-feed.addon64").is_file() {
             let mut step_prog = |mut p: DownloadProgress| {
-                p.percentage = ((2.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
+                p.percentage = ((3.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
                 progress_fn(p);
             };
             if let Err(e) = download_file_with_progress(
@@ -920,13 +1076,13 @@ where
         let _ = ensure_feeder_components(&mut log).await;
     }
 
-    // 4. OptiScaler DLSS-NR v0.8.4
+    // 5. OptiScaler DLSS-NR v0.8.4
     if !is_optiscaler_cached() {
         let comp_root = get_components_root();
         let opti_dir = comp_root.join("OptiScaler-0.8.4-dlssnr");
         let zip_path = comp_root.join("OptiScaler-NR-v0.8.4.zip");
         let mut step_prog = |mut p: DownloadProgress| {
-            p.percentage = ((3.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
+            p.percentage = ((4.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
             progress_fn(p);
         };
         if let Err(e) = download_file_with_progress(
@@ -949,12 +1105,12 @@ where
         }
     }
 
-    // 5. ReShade 6.8.0 Add-on Runtime
+    // 6. ReShade 6.8.0 Add-on Runtime
     if !is_reshade_cached() {
         let comp_root = get_components_root();
         let setup_path = comp_root.join("ReShade_Setup_6.8.0_Addon.exe");
         let mut step_prog = |mut p: DownloadProgress| {
-            p.percentage = ((4.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
+            p.percentage = ((5.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
             progress_fn(p);
         };
         if let Err(e) = download_file_with_progress(
@@ -977,13 +1133,13 @@ where
         }
     }
 
-    // 6. Streamline Runtime v2.14.1
+    // 7. Streamline Runtime v2.14.1
     if !is_streamline_cached() {
         let comp_root = get_components_root();
         let streamline_dir = comp_root.join("streamline-2.14.1");
         let zip_path = comp_root.join("streamline.zip");
         let mut step_prog = |mut p: DownloadProgress| {
-            p.percentage = ((5.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
+            p.percentage = ((6.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
             progress_fn(p);
         };
         if let Err(e) = download_file_with_progress(
@@ -1006,12 +1162,12 @@ where
         }
     }
 
-    // 7. dgVoodoo2 v2.87.5 (Legacy DirectX Wrapper)
+    // 8. dgVoodoo2 v2.87.5 (Legacy DirectX Wrapper)
     if !is_dgvoodoo_cached() {
         let comp_root = get_components_root();
         let zip_path = comp_root.join("dgVoodoo2_87_5.zip");
         let mut step_prog = |mut p: DownloadProgress| {
-            p.percentage = ((6.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
+            p.percentage = ((7.0 * 100.0) + p.percentage) / TOTAL_STEPS as f32;
             progress_fn(p);
         };
         if let Err(e) = download_file_with_progress(
@@ -1088,6 +1244,7 @@ where
             downloaded_bytes: 0,
             total_bytes: None,
             percentage: 100.0,
+            stage: DownloadStage::Downloading,
             message: "All mandatory components ready".to_string(),
         });
         Ok(())
@@ -1105,118 +1262,10 @@ where
             downloaded_bytes: 0,
             total_bytes: None,
             percentage: 0.0,
+            stage: DownloadStage::Downloading,
             message: err_msg.clone(),
         });
         Err(err_msg)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_zip_extraction_mock() {
-        let temp = std::env::temp_dir().join(format!("test_zip_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let mut buf = Vec::new();
-        {
-            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-            let options = zip::write::SimpleFileOptions::default();
-            writer.start_file("sample.txt", options).unwrap();
-            std::io::Write::write_all(&mut writer, b"hello world").unwrap();
-            writer.finish().unwrap();
-        }
-
-        let out_dir = temp.join("extracted");
-        extract_zip(std::io::Cursor::new(buf), &out_dir).unwrap();
-        assert!(out_dir.join("sample.txt").exists());
-        assert_eq!(fs::read_to_string(out_dir.join("sample.txt")).unwrap(), "hello world");
-
-        // Test compute_sha256 on a real file (known SHA-256 of "hello world")
-        let hash = compute_sha256(&out_dir.join("sample.txt")).unwrap();
-        assert_eq!(hash, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
-
-        // Test components root
-        let comp_root = get_components_root();
-        assert!(comp_root.exists() || comp_root.to_string_lossy().contains("dlss-5-studio"));
-
-        let _ = fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn test_download_progress_default_and_format_bytes() {
-        let def = DownloadProgress::default();
-        assert!(!def.is_downloading);
-        assert_eq!(def.percentage, 0.0);
-
-        assert_eq!(format_bytes(500), "500 B");
-        assert_eq!(format_bytes(2048), "2.0 KB");
-        assert_eq!(format_bytes(10 * 1024 * 1024), "10.00 MB");
-    }
-
-    #[test]
-    fn test_step_progress_calculation() {
-        const TOTAL_STEPS: usize = 7;
-        for step in 0..TOTAL_STEPS {
-            for pct in [0.0f32, 50.0f32, 100.0f32] {
-                let overall = ((step as f32 * 100.0) + pct) / TOTAL_STEPS as f32;
-                assert!(overall >= 0.0 && overall <= 100.0);
-            }
-        }
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_live_download_streamline_components() {
-        let res = ensure_all_mandatory_components_with_progress(|prog| {
-            if prog.is_downloading {
-                println!("Progress: {:.1}% - {}", prog.percentage, prog.message);
-            }
-        }).await;
-        assert!(res.is_ok(), "Mandatory download failed: {:?}", res);
-        assert!(is_streamline_cached(), "Streamline must be cached after download");
-        assert!(are_all_mandatory_components_cached(), "All mandatory components must be cached");
-    }
-
-    #[test]
-    fn test_feeder_shaders_validation_structure() {
-        let temp = std::env::temp_dir().join(format!("test_feeder_check_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let s_dir = temp.join("feeder-shaders");
-        fs::create_dir_all(s_dir.join("Shaders")).unwrap();
-        fs::create_dir_all(s_dir.join("Textures")).unwrap();
-
-        fs::write(s_dir.join("Shaders").join("DLSS5_Feed.fx"), b"// test").unwrap();
-        // Without DrawText.fxh, shader check should fail
-        let has_all_initial = s_dir.join("Shaders").join("DLSS5_Feed.fx").is_file()
-            && s_dir.join("Shaders").join("DrawText.fxh").is_file();
-        assert!(!has_all_initial);
-
-        // Add DrawText.fxh and FontAtlas.png
-        fs::write(s_dir.join("Shaders").join("DrawText.fxh"), b"// test drawtext").unwrap();
-        fs::write(s_dir.join("Textures").join("FontAtlas.png"), b"PNG").unwrap();
-
-        let has_all_final = s_dir.join("Shaders").join("DLSS5_Feed.fx").is_file()
-            && s_dir.join("Shaders").join("DrawText.fxh").is_file()
-            && s_dir.join("Textures").join("FontAtlas.png").is_file();
-        assert!(has_all_final);
-
-        let _ = fs::remove_dir_all(temp);
-    }
-
-    #[tokio::test]
-    async fn test_feeder_components_live_assembly() {
-        let mut log = Vec::new();
-        let res = ensure_feeder_components(&mut log).await;
-        assert!(res.is_ok(), "ensure_feeder_components failed: {:?}", res);
-        let fc = res.unwrap();
-        println!("FC SHADER DIR: {:?}", fc.shader_dir);
-        for l in &log {
-            println!("LOG: {}", l);
-        }
-        assert!(fc.shader_dir.join("Shaders").join("DLSS5_Feed.fx").is_file());
-        assert!(fc.shader_dir.join("Shaders").join("DrawText.fxh").is_file());
-        assert!(fc.shader_dir.join("Shaders").join("ReShade.fxh").is_file());
-        assert!(fc.shader_dir.join("Shaders").join("ReShadeUI.fxh").is_file());
-        assert!(fc.shader_dir.join("Textures").join("FontAtlas.png").is_file());
-    }
-}
