@@ -561,8 +561,12 @@ pub fn find_overlay_addon_payload() -> Option<PathBuf> {
     candidates.push(appdata_comp.join("dlss5-lab-overlay.addon64"));
 
     // 2. Workspace assets and build outputs
+    candidates.push(PathBuf::from(r"crates\addons\dlss-overlay-addon\assets\dlss-overlay.addon64"));
+    candidates.push(PathBuf::from("crates/addons/dlss-overlay-addon/assets/dlss-overlay.addon64"));
     candidates.push(PathBuf::from(r"assets\dlss-overlay.addon64"));
+    candidates.push(PathBuf::from("assets/dlss-overlay.addon64"));
     candidates.push(PathBuf::from(r"assets\dlss5-lab-overlay.addon64"));
+    candidates.push(PathBuf::from("assets/dlss5-lab-overlay.addon64"));
     candidates.push(PathBuf::from(r"target\release\dlss_overlay.dll"));
     candidates.push(PathBuf::from(r"target\release\dlss-overlay.addon64"));
     candidates.push(PathBuf::from(r"target\release\dlss5_lab_overlay.dll"));
