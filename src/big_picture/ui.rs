@@ -18,7 +18,7 @@ use super::gamepad::{detect_controller_kind, start_gamepad_listener, GamepadNavA
 use super::supervisor::launch_and_supervise;
 use super::tv::TvSleepInhibitor;
 use crate::core::install_routes::{
-    get_mfg_advisory, get_native_dlss_advisory, get_optiscaler_advisory, recommended_route, InstallRoute,
+    get_mfg_advisory_with_route, get_native_dlss_advisory, get_optiscaler_advisory, recommended_route, InstallRoute,
     RouteAdvisory,
 };
 use crate::core::journal::restore_game;
@@ -275,7 +275,11 @@ pub fn apply_cycled_exe(
         let api_lower_opt = opt.api.to_lowercase();
         let is_dx12_opt = api_lower_opt.contains("12") || api_lower_opt.contains("d3d12");
         let is_vulkan_opt = api_lower_opt.contains("vulkan");
-        current_games[pos].can_inject_fg = opt.bitness == 64 && has_native_dlss && !current_games[pos].has_frame_generation && (is_dx12_opt || is_vulkan_opt);
+        let is_dx11_opt = (api_lower_opt.contains("11") || api_lower_opt == "d3d11") && !is_dx12_opt;
+        if is_vulkan_opt || is_dx11_opt {
+            current_games[pos].has_frame_generation = false;
+        }
+        current_games[pos].can_inject_fg = opt.bitness == 64 && has_native_dlss && !current_games[pos].has_frame_generation && (is_dx12_opt || is_dx11_opt);
 
         let is_deployed = current_games[pos].installed_route.is_some()
             || current_games[pos].optiscaler_installed
@@ -706,10 +710,6 @@ pub fn BigPictureOverlay(props: BigPictureProps) -> Element {
     }
 
     // EXACT Desktop App effective routing & advisories (mirrors src/ui/app.rs lines 2929-2962)
-    let opti_advisory = active_game.as_ref().and_then(get_optiscaler_advisory);
-    let native_advisory = active_game.as_ref().and_then(get_native_dlss_advisory);
-    let mfg_advisory = active_game.as_ref().and_then(|g| get_mfg_advisory(g, is_rtx_40));
-
     let cur_backend = backend_choice.read().clone();
     let effective_backend = if cur_backend == "optiscaler" {
         "optiscaler".to_string()
@@ -722,6 +722,17 @@ pub fn BigPictureOverlay(props: BigPictureProps) -> Element {
     } else {
         "feeder".to_string()
     };
+
+    let opti_advisory = active_game.as_ref().and_then(get_optiscaler_advisory);
+    let native_advisory = active_game.as_ref().and_then(get_native_dlss_advisory);
+    let mfg_advisory = active_game.as_ref().and_then(|g| {
+        get_mfg_advisory_with_route(
+            g,
+            is_rtx_40,
+            Some(&effective_backend),
+            Some(&effective_route),
+        )
+    });
 
     let mut active_advisories: Vec<RouteAdvisory> = Vec::new();
     if !*is_vanilla_selected.read() {
@@ -2351,18 +2362,34 @@ pub fn BigPictureOverlay(props: BigPictureProps) -> Element {
                                         }
                                     } else if !active_advisories.is_empty() {
                                         for adv in &active_advisories {
-                                            div {
-                                                key: "{adv.title}",
-                                                class: "emu-note incompatibility-warning",
-                                                b { "{crate::core::i18n::t_param(&props.lang.read(), \"advisory_warning_high\", &adv.title)}" }
-                                                p { class: "advisory-intro", "{crate::core::i18n::t(&props.lang.read(), \"advisory_intro_restrictions\")}" }
-                                                ul { class: "advisory-reasons",
-                                                    for reason in &adv.reasons {
-                                                        li { key: "{reason}", "{crate::core::i18n::translate_advisory_reason(&props.lang.read(), reason)}" }
+                                            {
+                                                let is_info = adv.severity == crate::core::install_routes::AdvisorySeverity::Info;
+                                                let card_class = if is_info { "emu-note info-notice" } else { "emu-note incompatibility-warning" };
+                                                let title_text = if is_info {
+                                                    crate::core::i18n::t_param(&props.lang.read(), "advisory_notice_info", &adv.title)
+                                                } else {
+                                                    crate::core::i18n::t_param(&props.lang.read(), "advisory_warning_high", &adv.title)
+                                                };
+                                                let intro_text = if is_info {
+                                                    crate::core::i18n::t(&props.lang.read(), "advisory_intro_info")
+                                                } else {
+                                                    crate::core::i18n::t(&props.lang.read(), "advisory_intro_restrictions")
+                                                };
+                                                rsx! {
+                                                    div {
+                                                        key: "{adv.title}",
+                                                        class: "{card_class}",
+                                                        b { "{title_text}" }
+                                                        p { class: "advisory-intro", "{intro_text}" }
+                                                        ul { class: "advisory-reasons",
+                                                            for reason in &adv.reasons {
+                                                                li { key: "{reason}", "{crate::core::i18n::translate_advisory_reason(&props.lang.read(), reason)}" }
+                                                            }
+                                                        }
+                                                        div { class: "advisory-footer",
+                                                            span { "{crate::core::i18n::translate_advisory_recommendation(&props.lang.read(), &adv.recommendation)}" }
+                                                        }
                                                     }
-                                                }
-                                                div { class: "advisory-footer",
-                                                    span { "{crate::core::i18n::translate_advisory_recommendation(&props.lang.read(), &adv.recommendation)}" }
                                                 }
                                             }
                                         }

@@ -6,7 +6,7 @@ members = [
 
 [package]
 name = "dlss-studio"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2021"
 default-run = "dlss-studio"
 description = "DLSS Studio - Ultra-low latency, low-memory DLSS 5 & OptiScaler Pre-SR Manager in Pure Rust"

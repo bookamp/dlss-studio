@@ -589,6 +589,21 @@ pub fn t<'a>(lang: &str, key: &'a str) -> &'a str {
         ("hi", "addon_mfg_desc") => "Ada Lovelace आर्किटेक्चर पर 3x और 4x फ़्रेम दर अनलॉक करने वाला मल्टी-फ़्रेम जनरेशन ऐड-ऑन।",
         (_, "addon_mfg_desc") => "Multi-frame generation multiplier add-on unlocking 3x and 4x frame rates on Ada Lovelace architecture.",
 
+        ("de", "addon_rtxmfg_desc") => "Universelles Standalone-Frame-Generation-Multiplikator-Modul für bis zu 6x Bildraten auf Ada Lovelace GPUs.",
+        ("es", "addon_rtxmfg_desc") => "Módulo multiplicador de generación de fotogramas universal que desbloquea hasta 6x en GPU Ada Lovelace.",
+        ("fr", "addon_rtxmfg_desc") => "Module multiplicateur universel de génération d'images débloquant jusqu'à 6x sur les GPU Ada Lovelace.",
+        ("it", "addon_rtxmfg_desc") => "Modulo moltiplicatore di generazione frame universale che sblocca fino a 6x su GPU Ada Lovelace.",
+        ("pt", "addon_rtxmfg_desc") => "Módulo multiplicador de geração de quadros universal que desbloqueia até 6x em GPUs Ada Lovelace.",
+        ("ru", "addon_rtxmfg_desc") => "Универсальный автономный модуль генерации кадров, открывающий до 6x частоты кадров на GPU Ada Lovelace.",
+        ("zh", "addon_rtxmfg_desc") => "通用独立多帧生成乘数模块，在 Ada Lovelace GPU 上最高解锁 6x 帧率突破。",
+        ("ja", "addon_rtxmfg_desc") => "Ada Lovelace GPUで最大6倍のフレームレートを解放するユニバーサルフレーム生成モジュール。",
+        ("ko", "addon_rtxmfg_desc") => "Ada Lovelace GPU에서 최대 6배 프레임 속도를 잠금 해제하는 범용 독립 실행형 프레임 생성 모듈.",
+        ("pl", "addon_rtxmfg_desc") => "Uniwersalny samodzielny moduł mnożnika generowania klatek odblokowujący do 6x klatek na GPU Ada Lovelace.",
+        ("tr", "addon_rtxmfg_desc") => "Ada Lovelace GPU'larda 6 kata kadar kare hızının kilidini açan evrensel bağımsız kare oluşturma modülü.",
+        ("ar", "addon_rtxmfg_desc") => "وحدة مضاعف توليد الإطارات المستقلة الشاملة التي تفتح معدلات إطارات تصل إلى 6x على وحدات معالجة الرسومات Ada Lovelace.",
+        ("hi", "addon_rtxmfg_desc") => "Ada Lovelace GPU पर 6x तक फ़्रेम दर अनलॉक करने वाला यूनिवर्सल स्टैंडअलोन फ़्रेम जनरेशन मॉड्यूल।",
+        (_, "addon_rtxmfg_desc") => "Universal standalone Frame Generation multiplier module unlocking up to 6x frame rates on Ada Lovelace GPUs.",
+
         ("de", "addon_feeder_desc") => "Präzisions-Frame- und Tiefenpuffer-Feeder für Titel ohne natives DirectX 12 oder Streamline.",
         ("es", "addon_feeder_desc") => "Alimentador de búfer de profundidad y fotogramas de alta precisión para títulos sin DirectX 12 nativo.",
         ("fr", "addon_feeder_desc") => "Injecteur de tampons d'images et de profondeur haute précision pour les titres non-DirectX 12 natifs.",
@@ -3187,36 +3202,36 @@ pub fn t<'a>(lang: &str, key: &'a str) -> &'a str {
         (_, "dlg_placeholder_tag") => "e.g. HDR, experimental, v2.1",
 
         // --- feature_mfg_desc ---
-        ("de", "feature_mfg_desc") => "Ada-Lovelace-Frame-Generierungs-Multiplikator zur Freischaltung von 3x und 4x Bildraten über RenoDX-Bridge.",
-        ("es", "feature_mfg_desc") => "Multiplicador de generación de fotogramas Ada Lovelace que desbloquea tasas de 3x y 4x mediante el puente RenoDX.",
-        ("fr", "feature_mfg_desc") => "Multiplicateur de génération d'images Ada Lovelace débloquant des fréquences 3x et 4x via le pont RenoDX.",
-        ("it", "feature_mfg_desc") => "Moltiplicatore di frame Ada Lovelace che sblocca frame rate 3x e 4x tramite il bridge RenoDX.",
-        ("pt", "feature_mfg_desc") => "Multiplicador de geração de quadros Ada Lovelace desbloqueando taxas de 3x e 4x via ponte RenoDX.",
-        ("ru", "feature_mfg_desc") => "Множитель генерации кадров Ada Lovelace, открывающий частоту 3x и 4x через мост RenoDX.",
-        ("zh", "feature_mfg_desc") => "Ada Lovelace 专属插帧倍增引擎，通过 RenoDX 桥接解锁 3 倍与 4 倍极限流畅帧率。",
-        ("ja", "feature_mfg_desc") => "RenoDXコンパニオンブリッジを介して3倍および4倍のフレームレートを解除するAda Lovelaceフレーム生成マルチプライヤー。",
-        ("ko", "feature_mfg_desc") => "RenoDX 컴패니언 브리지를 통해 3배 및 4배 프레임 속도를 잠금 해제하는 Ada Lovelace 프레임 생성 승수.",
-        ("pl", "feature_mfg_desc") => "Mnożnik generowania klatek Ada Lovelace odblokowujący 3x i 4x liczbę klatek na sekundę za pośrednictwem mostu RenoDX.",
-        ("tr", "feature_mfg_desc") => "RenoDX köprüsü aracılığıyla 3 kat ve 4 kat kare hızlarının kilidini açan Ada Lovelace kare oluşturma çarpanı.",
-        ("ar", "feature_mfg_desc") => "مضاعف توليد الإطارات بمعمارية Ada Lovelace الذي يتيح معدلات إطارات 3x و 4x عبر جسر RenoDX.",
-        ("hi", "feature_mfg_desc") => "RenoDX कंपेनियन ब्रिज के माध्यम से 3x और 4x फ़्रेम दर अनलॉक करने वाला Ada Lovelace फ़्रेम जनरेशन मल्टीप्लायर।",
-        (_, "feature_mfg_desc") => "Ada Lovelace frame generation multiplier unlocking 3x and 4x frame rates via RenoDX companion bridge.",
+        ("de", "feature_mfg_desc") => "Ada-Lovelace-Frame-Generierungs-Multiplikator zur Freischaltung von 3x und 4x Bildraten über das universelle RTX 40 MFG-Modul.",
+        ("es", "feature_mfg_desc") => "Multiplicador de generación de fotogramas Ada Lovelace que desbloquea tasas de 3x y 4x mediante el módulo universal RTX 40 MFG.",
+        ("fr", "feature_mfg_desc") => "Multiplicateur de génération d'images Ada Lovelace débloquant des fréquences 3x et 4x via le module universel RTX 40 MFG.",
+        ("it", "feature_mfg_desc") => "Moltiplicatore di frame Ada Lovelace che sblocca frame rate 3x e 4x tramite il modulo universale RTX 40 MFG.",
+        ("pt", "feature_mfg_desc") => "Multiplicador de geração de quadros Ada Lovelace desbloqueando taxas de 3x e 4x via módulo universal RTX 40 MFG.",
+        ("ru", "feature_mfg_desc") => "Множитель генерации кадров Ada Lovelace, открывающий частоту 3x и 4x через универсальный модуль RTX 40 MFG.",
+        ("zh", "feature_mfg_desc") => "Ada Lovelace 专属插帧倍增引擎，通过通用 RTX 40 MFG 模块解锁 3 倍与 4 倍极限流畅帧率。",
+        ("ja", "feature_mfg_desc") => "ユニバーサルRTX 40 MFGモジュールを介して3倍および4倍のフレームレートを解除するAda Lovelaceフレーム生成マルチプライヤー。",
+        ("ko", "feature_mfg_desc") => "범용 RTX 40 MFG 모듈을 통해 3배 및 4배 프레임 속도를 잠금 해제하는 Ada Lovelace 프레임 생성 승수.",
+        ("pl", "feature_mfg_desc") => "Mnożnik generowania klatek Ada Lovelace odblokowujący 3x i 4x liczbę klatek na sekundę za pośrednictwem uniwersalnego modułu RTX 40 MFG.",
+        ("tr", "feature_mfg_desc") => "Evrensel RTX 40 MFG modülü aracılığıyla 3 kat ve 4 kat kare hızlarının kilidini açan Ada Lovelace kare oluşturma çarpanı.",
+        ("ar", "feature_mfg_desc") => "مضاعف توليد الإطارات بمعمارية Ada Lovelace الذي يتيح معدلات إطارات 3x و 4x عبر وحدة RTX 40 MFG الشاملة.",
+        ("hi", "feature_mfg_desc") => "यूनिवर्सल RTX 40 MFG मॉड्यूल के माध्यम से 3x और 4x फ़्रेम दर अनलॉक करने वाला Ada Lovelace फ़्रेम जनरेशन मल्टीप्लायर।",
+        (_, "feature_mfg_desc") => "Ada Lovelace frame generation multiplier unlocking 3x and 4x frame rates via Universal RTX 40 MFG module.",
 
         // --- feature_mfg_dx11_note ---
-        ("de", "feature_mfg_dx11_note") => "4x Frame Generation erfordert ein Spiel mit nativem NVIDIA DLSS 3 Frame Generation (DLSS-G) unter DirectX 12. Bei Titeln ohne natives DLSS-G (wie Baldur's Gate 3) wird Frame Generation ausschließlich unter Vulkan (bg3.exe) unterstützt.",
-        ("es", "feature_mfg_dx11_note") => "La generación de fotogramas 4x requiere un juego con DLSS 3 Frame Generation nativo en DirectX 12. Para títulos sin DLSS-G nativo (como Baldur's Gate 3), la inyección se admite exclusivamente con el ejecutable de Vulkan (bg3.exe).",
-        ("fr", "feature_mfg_dx11_note") => "La génération d'images 4x nécessite un jeu avec DLSS 3 Frame Generation natif sous DirectX 12. Pour les jeux sans DLSS-G natif (comme Baldur's Gate 3), l'injection n'est prise en charge que sous l'exécutable Vulkan (bg3.exe).",
-        ("it", "feature_mfg_dx11_note") => "La generazione 4x di frame richiede un gioco con DLSS 3 Frame Generation nativo su DirectX 12. Per i giochi senza DLSS-G nativo (come Baldur's Gate 3), l'iniezione è supportata solo con l'eseguibile Vulkan (bg3.exe).",
-        ("pt", "feature_mfg_dx11_note") => "A geração de quadros 4x requer um jogo com DLSS 3 Frame Generation nativo no DirectX 12. Para títulos sem DLSS-G nativo (como Baldur's Gate 3), a injeção é suportada exclusivamente no executável Vulkan (bg3.exe).",
-        ("ru", "feature_mfg_dx11_note") => "Генерация кадров 4x требует игры с нативным DLSS 3 Frame Generation (DLSS-G) на DirectX 12. Для игр без нативного DLSS-G (напр., Baldur's Gate 3) инъекция поддерживается только через Vulkan (bg3.exe).",
-        ("zh", "feature_mfg_dx11_note") => "4x 帧生成需要游戏在 DirectX 12 下具备原生 NVIDIA DLSS 3 插帧 (DLSS-G) 支持。对于无原生 DLSS-G 的游戏（例如博德之门 3），仅支持通过 Vulkan 可执行文件 (bg3.exe) 进行插帧注入。",
-        ("ja", "feature_mfg_dx11_note") => "4倍フレーム生成にはDirectX 12環境でネイティブなNVIDIA DLSS 3 Frame Generation (DLSS-G)が必要です。ネイティブDLSS-Gのないゲーム(Baldur's Gate 3など)では、Vulkan実行ファイル(bg3.exe)でのみサポートされます。",
-        ("ko", "feature_mfg_dx11_note") => "4배 프레임 생성을 사용하려면 DirectX 12 환경에서 네이티브 NVIDIA DLSS 3 프레임 생성(DLSS-G)을 지원해야 합니다. Baldur's Gate 3와 같이 네이티브 지원이 없는 타이틀은 Vulkan 실행 파일(bg3.exe)에서만 지원됩니다.",
-        ("pl", "feature_mfg_dx11_note") => "Generowanie klatek 4x wymaga gry z natywnym DLSS 3 Frame Generation na DirectX 12. W przypadku gier bez natywnego DLSS-G (np. Baldur's Gate 3) wstrzykiwanie jest obsługiwane wyłącznie w pliku Vulkan (bg3.exe).",
-        ("tr", "feature_mfg_dx11_note") => "4x Kare Oluşturma, DirectX 12'de yerel NVIDIA DLSS 3 Kare Oluşturma (DLSS-G) gerektirir. Yerel DLSS-G'si olmayan oyunlar için (Baldur's Gate 3 gibi), ekleme yalnızca Vulkan (bg3.exe) altında desteklenir.",
-        ("ar", "feature_mfg_dx11_note") => "يتطلب توليد الإطارات 4x لعبة تدعم تقنية NVIDIA DLSS 3 الأصلية على DirectX 12. بالنسبة للألعاب التي لا تدعم DLSS-G الأصلي (مثل Baldur's Gate 3)، فإن الحقن مدعوم حصريًا عبر ملف تشغيل Vulkan (bg3.exe).",
-        ("hi", "feature_mfg_dx11_note") => "4x फ़्रेम जनरेशन के लिए DirectX 12 पर नेटिव NVIDIA DLSS 3 फ़्रेम जनरेशन (DLSS-G) वाले गेम की आवश्यकता होती है। बिना नेटिव DLSS-G वाले टाइटल्स (जैसे Baldur's Gate 3) के लिए फ़्रेम जनरेशन इंजेक्शन विशेष रूप से Vulkan निष्पादन योग्य (bg3.exe) के तहत समर्थित है।",
-        (_, "feature_mfg_dx11_note") => "4x Frame Generation requires a game with native NVIDIA DLSS 3 Frame Generation (DLSS-G) on DirectX 12. For titles without native DLSS-G (such as Baldur's Gate 3), Frame Generation injection is supported exclusively under the Vulkan executable (bg3.exe).",
+        ("de", "feature_mfg_dx11_note") => "4x Frame Generation erfordert ein Spiel mit nativem NVIDIA DLSS 3 Frame Generation (DLSS-G) unter DirectX 12 oder DirectX 11-Titel mit nativem DLSS über die OptiScaler DLSS-NR-Route. Frame Generation wird unter Vulkan nicht unterstützt.",
+        ("es", "feature_mfg_dx11_note") => "La generación de fotogramas 4x requiere un juego con DLSS 3 Frame Generation nativo en DirectX 12, o títulos de DirectX 11 con DLSS nativo puenteados a DirectX 12 mediante la ruta OptiScaler DLSS-NR. La generación de fotogramas no es compatible con Vulkan.",
+        ("fr", "feature_mfg_dx11_note") => "La génération d'images 4x nécessite un jeu avec DLSS 3 Frame Generation natif sous DirectX 12, ou des titres DirectX 11 avec DLSS natif pontés vers DirectX 12 via la route OptiScaler DLSS-NR. La génération d'images n'est pas prise en charge sous Vulkan.",
+        ("it", "feature_mfg_dx11_note") => "La generazione 4x di frame richiede un gioco con DLSS 3 Frame Generation nativo su DirectX 12, o titoli DirectX 11 con DLSS nativo collegati a DirectX 12 tramite la route OptiScaler DLSS-NR. La generazione di frame non è supportata su Vulkan.",
+        ("pt", "feature_mfg_dx11_note") => "A geração de quadros 4x requer um jogo com DLSS 3 Frame Generation nativo no DirectX 12, ou títulos DirectX 11 com DLSS nativo conectados ao DirectX 12 via rota OptiScaler DLSS-NR. A geração de quadros não é suportada no Vulkan.",
+        ("ru", "feature_mfg_dx11_note") => "Генерация кадров 4x требует игры с нативным DLSS 3 Frame Generation (DLSS-G) на DirectX 12 или игр DirectX 11 с нативным DLSS через мост OptiScaler DLSS-NR. Генерация кадров не поддерживается на Vulkan.",
+        ("zh", "feature_mfg_dx11_note") => "4x 帧生成需要游戏在 DirectX 12 下具备原生 NVIDIA DLSS 3 插帧 (DLSS-G) 支持，或者通过 OptiScaler DLSS-NR 路线将具备原生 DLSS 的 DirectX 11 游戏桥接至 DirectX 12。Vulkan 不支持帧生成。",
+        ("ja", "feature_mfg_dx11_note") => "4倍フレーム生成にはDirectX 12環境でネイティブなNVIDIA DLSS 3 Frame Generation (DLSS-G)、またはOptiScaler DLSS-NRルート経由でDirectX 12にブリッジされたネイティブDLSS対応DirectX 11ゲームが必要です。Vulkanではフレーム生成はサポートされません。",
+        ("ko", "feature_mfg_dx11_note") => "4배 프레임 생성을 사용하려면 DirectX 12 환경에서 네이티브 NVIDIA DLSS 3 프레임 생성(DLSS-G)을 지원하거나, OptiScaler DLSS-NR 경로를 통해 DirectX 12로 브리지된 네이티브 DLSS 지원 DirectX 11 타이틀이 필요합니다. Vulkan에서는 프레임 생성이 지원되지 않습니다.",
+        ("pl", "feature_mfg_dx11_note") => "Generowanie klatek 4x wymaga gry z natywnym DLSS 3 Frame Generation na DirectX 12 lub tytułów DirectX 11 z natywnym DLSS zmostkowanych do DirectX 12 za pośrednictwem trasy OptiScaler DLSS-NR. Generowanie klatek nie jest obsługiwane w Vulkan.",
+        ("tr", "feature_mfg_dx11_note") => "4x Kare Oluşturma, DirectX 12'de yerel NVIDIA DLSS 3 Kare Oluşturma (DLSS-G) veya OptiScaler DLSS-NR rotası aracılığıyla DirectX 12'ye köprülenmiş yerel DLSS içeren DirectX 11 oyunları gerektirir. Kare Oluşturma Vulkan'da desteklenmez.",
+        ("ar", "feature_mfg_dx11_note") => "يتطلب توليد الإطارات 4x لعبة تدعم تقنية NVIDIA DLSS 3 الأصلية على DirectX 12، أو ألعاب DirectX 11 المزودة بـ DLSS أصلي يتم جسرها إلى DirectX 12 عبر مسار OptiScaler DLSS-NR. توليد الإطارات غير مدعوم على Vulkan.",
+        ("hi", "feature_mfg_dx11_note") => "4x फ़्रेम जनरेशन के लिए DirectX 12 पर नेटिव NVIDIA DLSS 3 फ़्रेम जनरेशन (DLSS-G) वाले गेम या OptiScaler DLSS-NR रूट के माध्यम से DirectX 12 पर ब्रिज किए गए नेटिव DLSS वाले DirectX 11 टाइटल्स की आवश्यकता होती है। Vulkan पर फ़्रेम जनरेशन समर्थित नहीं है।",
+        (_, "feature_mfg_dx11_note") => "4x Frame Generation requires a game with native NVIDIA DLSS 3 Frame Generation (DLSS-G) on DirectX 12, or DirectX 11 titles with native DLSS bridged to DirectX 12 via the OptiScaler DLSS-NR route. Frame Generation is not supported on Vulkan.",
 
         // --- feature_mfg_general_note ---
         ("de", "feature_mfg_general_note") => "4x Multi-Frame-Generation erfordert ein Spiel mit nativem NVIDIA DLSS 3 Frame Generation (DLSS-G / Streamline). Bei Titeln ohne natives DLSS-G bietet DLSS 5 Feeder Super Resolution und DLAA-Bildrekonstruktion.",
@@ -6719,6 +6734,38 @@ pub fn t<'a>(lang: &str, key: &'a str) -> &'a str {
         ("hi", "advisory_warning_high") => "🚨 उच्च असंगतता चेतावनी: {0}",
         (_, "advisory_warning_high") => "🚨 High Incompatibility Warning: {0}",
 
+        // --- advisory_notice_info ---
+        ("de", "advisory_notice_info") => "ℹ️ Konfigurationshinweis: {0}",
+        ("es", "advisory_notice_info") => "ℹ️ Aviso de configuración: {0}",
+        ("fr", "advisory_notice_info") => "ℹ️ Avis de configuration : {0}",
+        ("it", "advisory_notice_info") => "ℹ️ Avviso di configurazione: {0}",
+        ("pt", "advisory_notice_info") => "ℹ️ Aviso de configuração: {0}",
+        ("ru", "advisory_notice_info") => "ℹ️ Уведомление о конфигурации: {0}",
+        ("zh", "advisory_notice_info") => "ℹ️ 配置提示：{0}",
+        ("ja", "advisory_notice_info") => "ℹ️ 設定通知: {0}",
+        ("ko", "advisory_notice_info") => "ℹ️ 구성 알림: {0}",
+        ("pl", "advisory_notice_info") => "ℹ️ Informacja o konfiguracji: {0}",
+        ("tr", "advisory_notice_info") => "ℹ️ Yapılandırma Bildirimi: {0}",
+        ("ar", "advisory_notice_info") => "ℹ️ إشعار التكوين: {0}",
+        ("hi", "advisory_notice_info") => "ℹ️ कॉन्फ़िगरेशन सूचना: {0}",
+        (_, "advisory_notice_info") => "ℹ️ Configuration Notice: {0}",
+
+        // --- advisory_intro_info ---
+        ("de", "advisory_intro_info") => "Konfigurationsdetails für diese Route:",
+        ("es", "advisory_intro_info") => "Detalles de configuración para esta ruta:",
+        ("fr", "advisory_intro_info") => "Détails de configuration pour cette route :",
+        ("it", "advisory_intro_info") => "Dettagli di configurazione per questo percorso:",
+        ("pt", "advisory_intro_info") => "Detalhes de configuração para esta rota:",
+        ("ru", "advisory_intro_info") => "Параметры конфигурации для этого маршрута:",
+        ("zh", "advisory_intro_info") => "此路由的配置详情：",
+        ("ja", "advisory_intro_info") => "このルートの設定の詳細:",
+        ("ko", "advisory_intro_info") => "이 경로의 구성 세부정보:",
+        ("pl", "advisory_intro_info") => "Szczegóły konfiguracji dla tej trasy:",
+        ("tr", "advisory_intro_info") => "Bu rota için yapılandırma ayrıntıları:",
+        ("ar", "advisory_intro_info") => "تفاصيل التكوين لهذا المسار:",
+        ("hi", "advisory_intro_info") => "इस रूट के लिए कॉन्फ़िगरेशन विवरण:",
+        (_, "advisory_intro_info") => "Configuration details for this route:",
+
         // --- advisory_intro_restrictions ---
         ("de", "advisory_intro_restrictions") => "Diese Route kann aufgrund technischer Einschränkungen möglicherweise nicht initialisiert werden, Grafikfehler verursachen oder abstürzen:",
         ("es", "advisory_intro_restrictions") => "Esta ruta puede fallar al inicializarse, causar artefactos visuales o bloquear el juego debido a restricciones técnicas:",
@@ -7039,6 +7086,38 @@ pub fn t<'a>(lang: &str, key: &'a str) -> &'a str {
         ("hi", "advisory_rec_feeder_sr_dlaa") => "बिना नेटिव DLSS-G वाले शीर्षकों के लिए, DLSS 5 फीडर सुपर रिज़ॉल्यूशन और DLAA छवि पुनर्निर्माण प्रदान करता है।",
         (_, "advisory_rec_feeder_sr_dlaa") => "For titles without native DLSS-G, DLSS 5 Feeder provides Super Resolution and DLAA image reconstruction.",
 
+        // --- advisory_rec_opti_dx11 ---
+        ("de", "advisory_rec_opti_dx11") => "OptiScaler leitet DirectX 11 DLSS-Aufrufe an D3D12 für DLSS 5 Neural Rendering weiter.",
+        ("es", "advisory_rec_opti_dx11") => "OptiScaler conectará las llamadas DLSS de DirectX 11 a D3D12 para DLSS 5 Neural Rendering.",
+        ("fr", "advisory_rec_opti_dx11") => "OptiScaler reliera les appels DLSS DirectX 11 à D3D12 pour le rendu neuronal DLSS 5.",
+        ("it", "advisory_rec_opti_dx11") => "OptiScaler collegherà le chiamate DLSS di DirectX 11 a D3D12 per il rendering neurale DLSS 5.",
+        ("pt", "advisory_rec_opti_dx11") => "O OptiScaler conectará chamadas DLSS do DirectX 11 ao D3D12 para o DLSS 5 Neural Rendering.",
+        ("ru", "advisory_rec_opti_dx11") => "OptiScaler перенаправит вызовы DLSS из DirectX 11 в D3D12 для нейрорендеринга DLSS 5.",
+        ("zh", "advisory_rec_opti_dx11") => "OptiScaler 将通过 D3D12 桥接 DirectX 11 DLSS 调用以实现 DLSS 5 神经网络渲染。",
+        ("ja", "advisory_rec_opti_dx11") => "OptiScaler は DirectX 11 DLSS 呼び出しを D3D12 にブリッジして DLSS 5 ニューラル レンダリングを実現します。",
+        ("ko", "advisory_rec_opti_dx11") => "OptiScaler는 DLSS 5 뉴럴 렌더링을 위해 DirectX 11 DLSS 호출을 D3D12로 브리지합니다.",
+        ("pl", "advisory_rec_opti_dx11") => "OptiScaler przekieruje wywołania DLSS DirectX 11 do D3D12 dla renderowania neuronowego DLSS 5.",
+        ("tr", "advisory_rec_opti_dx11") => "OptiScaler, DLSS 5 Nöral İşleme için DirectX 11 DLSS çağrılarını D3D12'ye köprüler.",
+        ("ar", "advisory_rec_opti_dx11") => "سيعمل OptiScaler على جسر استدعاءات DirectX 11 DLSS إلى D3D12 من أجل التقديم العصبي DLSS 5.",
+        ("hi", "advisory_rec_opti_dx11") => "OptiScaler DLSS 5 न्यूरल रेंडरिंग के लिए DirectX 11 DLSS कॉल्स को D3D12 में ब्रिज करेगा।",
+        (_, "advisory_rec_opti_dx11") => "OptiScaler will bridge DirectX 11 DLSS calls to D3D12 for DLSS 5 Neural Rendering.",
+
+        // --- advisory_rec_vulkan_fg_alt ---
+        ("de", "advisory_rec_vulkan_fg_alt") => "Wechseln Sie in der obigen ausführbaren Auswahl zu Vulkan, um die Vulkan-Frame-Generierung zu verwenden.",
+        ("es", "advisory_rec_vulkan_fg_alt") => "Cambie el ejecutable a Vulkan en el selector superior para usar la generación de fotogramas de Vulkan.",
+        ("fr", "advisory_rec_vulkan_fg_alt") => "Basculez l'exécutable vers Vulkan dans le sélecteur ci-dessus pour utiliser la génération d'images Vulkan.",
+        ("it", "advisory_rec_vulkan_fg_alt") => "Passa all'eseguibile Vulkan nel selettore in alto per utilizzare la generazione frame Vulkan.",
+        ("pt", "advisory_rec_vulkan_fg_alt") => "Mude o executável para Vulkan no seletor acima para usar a geração de quadros Vulkan.",
+        ("ru", "advisory_rec_vulkan_fg_alt") => "Переключите исполняемый файл на Vulkan в селекторе выше, чтобы использовать генерацию кадров Vulkan.",
+        ("zh", "advisory_rec_vulkan_fg_alt") => "在上方可执行文件选择器中切换为 Vulkan，以使用 Vulkan 帧生成。",
+        ("ja", "advisory_rec_vulkan_fg_alt") => "Vulkan フレーム生成を使用するには、上の実行可能ファイル セレクターで Vulkan に切り替えてください。",
+        ("ko", "advisory_rec_vulkan_fg_alt") => "Vulkan 프레임 생성을 사용하려면 위 실행 파일 선택기에서 Vulkan으로 전환하세요.",
+        ("pl", "advisory_rec_vulkan_fg_alt") => "Przełącz plik wykonywalny na Vulkan w powyższym selektorze, aby użyć generowania klatek Vulkan.",
+        ("tr", "advisory_rec_vulkan_fg_alt") => "Vulkan Kare Oluşturmayı kullanmak için yukarıdaki çalıştırılabilir dosya seçicisinde Vulkan'a geçin.",
+        ("ar", "advisory_rec_vulkan_fg_alt") => "قم بالتبديل إلى ملف Vulkan القابل للتنفيذ في المحدد أعلاه لاستخدام توليد إطارات Vulkan.",
+        ("hi", "advisory_rec_vulkan_fg_alt") => "Vulkan फ्रेम जनरेशन का उपयोग करने के लिए ऊपर निष्पादन योग्य चयनकर्ता में Vulkan पर स्विच करें।",
+        (_, "advisory_rec_vulkan_fg_alt") => "Switch executable to Vulkan in the Executable selector above to use Vulkan Frame Generation.",
+
         (_, fallback) => fallback,
     }
 }
@@ -7081,6 +7160,10 @@ pub fn translate_advisory_recommendation(lang: &str, rec: &str) -> String {
         t(lang, "advisory_rec_feeder_generic").to_string()
     } else if rec.contains("For titles without native DLSS-G") {
         t(lang, "advisory_rec_feeder_sr_dlaa").to_string()
+    } else if rec.contains("bridge DirectX 11 DLSS calls to D3D12") {
+        t(lang, "advisory_rec_opti_dx11").to_string()
+    } else if rec.contains("Switch executable to Vulkan") {
+        t(lang, "advisory_rec_vulkan_fg_alt").to_string()
     } else {
         rec.to_string()
     }

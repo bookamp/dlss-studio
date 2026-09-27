@@ -1,10 +1,50 @@
-# DLSS 5 Studio v2.0.0 ⚡
+# DLSS 5 Studio v2.0.1 ⚡
 
-> **Major Release: Big Picture 10-foot television couch streaming mode, native XInput controller integration, automatic Vibepollo / Apollo Moonlight game streaming registration, and unified multilingual localization.**
+> **Maintenance & Enhancement Release: Universal RTX 40 MFG core integration (Dashdogy), DirectX 11 D3D11on12 OptiScaler bridge & Streamline 2.14.1 stack, cumulative history rollback hardening, Vulkan test sandboxing, dynamic route advisories, and scanner accuracy refinements.**
 
 ---
 
 ### 🚀 Highlights & Improvements
+
+- **Universal RTX 40 Multi-Frame Generation (Dashdogy Core Module)**:
+  - Integrated Dashdogy's standalone `RTXMFG.dll` as a first-class core component alongside RenoDX MFG Unlock.
+  - Added live cache checking and dynamic GitHub API release resolution (`resolve_latest_dashdogy_mfg`) with dedicated Add-on page UI cards.
+  - Automatically deploys `version.dll` and generates matching `RTXMFG-Universal.json` and `RTX40MFG-Universal.json` configuration profiles.
+  - Pre-configures `OptiScaler.ini` (`[FrameGen] External = true`, `[Dx11withDx12] BuiltinMfgUnlock = true`, `UseDelayedInit = true`, and interpolation count overrides).
+- **DirectX 11 OptiScaler D3D11on12 Interop & Streamline 2.14.1 Stack**:
+  - Robust first-class DirectX 11 OptiScaler support bridging DX11 DLSS calls through `D3D11on12` to modern DLSS 5 Neural Rendering.
+  - Deploys verified Streamline 2.14.1 stack into `OptiScaler/streamline/` and `nvngx_dlssg.dll` to root on DX11 titles, permanently eliminating `DXGI_ERROR_DEVICE_REMOVED` crashes.
+  - Injected non-blocking blue configuration notice (`AdvisorySeverity::Info`) alerting users that DirectX 11 Multi-Frame Generation operates via D3D11on12 and requires an in-game DLSS setting.
+- **Cumulative Injected History (`added_history.json`) & Backup Continuity**:
+  - Introduced cumulative `added_history.json` tracking immune to 5-manifest rollback pruning, guaranteeing 100% clean restoration with zero orphan DLLs.
+  - Carries forward genuine unmodded vanilla backups through successive route hot-swaps without intermediate restore.
+- **Scanner Accuracy & Vulkan Gating**:
+  - Gated Vulkan titles from reporting false positive Frame Generation support (`Unsupported (Vulkan API)`).
+  - Removed `sl.dlss.dll` from the Frame Generation heuristic.
+  - Prevented mod-deployed `nvngx_dlssg.dll` from triggering false Native DLSS-G detection via journal verification.
+  - Sandboxed test environment for `vulkan_layer.rs` to prevent automated test runs from modifying host registry keys.
+- **Dynamic Route Advisories Engine**:
+  - Added `get_mfg_advisory_with_route` evaluating active route and backend limitations across Vulkan, Feeder, and DirectX 11 with zero user lockouts.
+- **Multilingual Copy Refresh**:
+  - Refreshed `feature_mfg_desc` and notes across all 14 supported languages to reference the Universal RTX 40 MFG module.
+
+---
+
+### 📦 Included Packages & Downloads
+
+| File | Type | Description |
+| :--- | :--- | :--- |
+| **`dlss-studio-v2.0.1-setup.exe`** | Standalone Setup / Installer (Recommended) | Native Rust setup wizard with configurable install and data storage locations, in-place update detection, Start Menu & Desktop shortcuts, and Windows registration. |
+| **`dlss-studio-v2.0.1-portable.exe`** | Portable Executable | Standalone self-contained executable. Run anywhere with no installation required. |
+| **`dlss-mip-fix.addon64`** | D3D12 Mip Companion Add-on | Standalone pure Rust ReShade companion add-on for D3D12 mip level bias tuning and texture filtering. |
+| **`renodx-dlss5.addon64`** | RenoDX DLSS 5 Companion Add-on | ReShade companion add-on for DLSS 5 Neural Reconstruction and Frame Generation. |
+
+---
+
+### 📜 Previous Releases
+
+<details>
+<summary><b>DLSS 5 Studio v2.0.0 — Big Picture Mode & Pure Rust Mip Companion Add-on</b></summary>
 
 - **Big Picture Mode (10-Foot Television & Gamepad Interface)**:
   - Authentic console experience with native XInput gamepad navigation, dynamic hero backdrop vignetting, full-screen game showcase, and quick store filtering.
@@ -23,35 +63,7 @@
 - **Unified Multilingual Localization**:
   - Full Big Picture mode and core interface support integrated across all 14 languages leveraging the unified translation engine.
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/bookamp/dlss-studio/main/assets/preview-bp-grid.webp" alt="DLSS 5 Studio Big Picture Mode Game Grid" width="700">
-</p>
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/bookamp/dlss-studio/main/assets/preview-bp-inspector.webp" alt="Big Picture Inline Inspector and Preset Tuning" width="700">
-</p>
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/bookamp/dlss-studio/main/assets/preview-bp-vibepollo.webp" alt="Vibepollo and Apollo Streaming Integration Setting" width="700">
-</p>
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/bookamp/dlss-studio/main/assets/preview-bp-apollo-apps.webp" alt="Apollo / Sunshine Applications Integration showing DLSS Studio registered" width="700">
-</p>
-
----
-
-### 📦 Included Packages & Downloads
-
-| File | Type | Description |
-| :--- | :--- | :--- |
-| **`dlss-studio-v2.0.0-setup.exe`** | Standalone Setup / Installer (Recommended) | Native Rust setup wizard with configurable install and data storage locations, in-place update detection, Start Menu & Desktop shortcuts, and Windows registration. |
-| **`dlss-studio-v2.0.0-portable.exe`** | Portable Executable | Standalone self-contained executable. Run anywhere with no installation required. |
-| **`dlss-mip-fix.addon64`** | D3D12 Mip Companion Add-on | Standalone pure Rust ReShade companion add-on for D3D12 mip level bias tuning and texture filtering. |
-
----
-
-### 📜 Previous Releases
+</details>
 
 <details>
 <summary><b>DLSS 5 Studio v1.0.8 — Feeder Route MFG Detection & DirectX 11 Advisory Release</b></summary>

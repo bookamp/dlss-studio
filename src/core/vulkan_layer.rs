@@ -17,7 +17,6 @@ struct InstallsRecord {
     games: Vec<String>,
 }
 
-#[cfg(test)]
 thread_local! {
     static TEST_STORAGE_DIR: PathBuf = {
         let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
@@ -27,14 +26,30 @@ thread_local! {
     };
 }
 
-#[doc(hidden)]
-pub fn get_vulkan_layer_storage_dir() -> PathBuf {
+fn is_test_environment() -> bool {
     #[cfg(test)]
-    {
-        TEST_STORAGE_DIR.with(|p| p.clone())
-    }
+    return true;
+
     #[cfg(not(test))]
     {
+        if std::env::var("CARGO_MANIFEST_DIR").is_ok() || std::env::var("RUST_TEST_THREADS").is_ok() {
+            return true;
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            let lower = exe.to_string_lossy().to_lowercase();
+            if lower.contains("target\\debug\\deps") || lower.contains("target\\release\\deps") || lower.contains(".system_generated") {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+#[doc(hidden)]
+pub fn get_vulkan_layer_storage_dir() -> PathBuf {
+    if is_test_environment() {
+        TEST_STORAGE_DIR.with(|p| p.clone())
+    } else {
         let p = crate::core::state::get_appdata_dir().join("vulkan_layer");
         let _ = fs::create_dir_all(&p);
         p
@@ -88,6 +103,9 @@ fn set_registry_dword(_subkey: &str, _value_name: &str, _dword_val: u32) -> Resu
 
 #[cfg(not(test))]
 fn set_registry_dword(subkey: &str, value_name: &str, dword_val: u32) -> Result<(), String> {
+    if is_test_environment() {
+        return Ok(());
+    }
     unsafe {
         let wide_sub = to_wide_null(subkey);
         let mut hkey: HKEY = HKEY::default();
@@ -131,6 +149,9 @@ fn delete_registry_value(_subkey: &str, _value_name: &str) -> Result<(), String>
 
 #[cfg(not(test))]
 fn delete_registry_value(subkey: &str, value_name: &str) -> Result<(), String> {
+    if is_test_environment() {
+        return Ok(());
+    }
     unsafe {
         let wide_sub = to_wide_null(subkey);
         let mut hkey: HKEY = HKEY::default();

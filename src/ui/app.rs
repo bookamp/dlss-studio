@@ -2221,6 +2221,51 @@ pub fn App() -> Element {
                                 }
                             }
 
+                            // 3b. Mandatory Core: Dashdogy Universal RTX40MFG-Unlock
+                            div { class: if crate::core::downloader::is_rtxmfg_cached() { "addon on" } else { "addon" },
+                                div { class: "mark",
+                                    if crate::core::downloader::is_rtxmfg_cached() {
+                                        svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
+                                            path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
+                                        }
+                                    }
+                                }
+                                div { class: "body",
+                                    div { class: "t",
+                                        "RTX40MFG-Unlock (Universal Frame Generation)"
+                                        span { class: "tag warn", "{crate::core::i18n::t(&current_lang.read(), \"tag_rtx40\")}" }
+                                    }
+                                    div { class: "d", "RTXMFG.dll · Universal MFG Bridge · Native Module · ~1.2 MB" }
+                                    div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                        "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} https://github.com/dashdogy/RTX40MFG-Unlock"
+                                    }
+                                    div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
+                                        "{crate::core::i18n::t(&current_lang.read(), \"addon_rtxmfg_desc\")}"
+                                    }
+                                }
+                                div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
+                                    if crate::core::downloader::is_rtxmfg_cached() {
+                                        span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
+                                            "✓ {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
+                                        }
+                                    } else {
+                                        button {
+                                            class: "tag warn",
+                                            style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
+                                            title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
+                                            onclick: move |_| {
+                                                *trigger_component_download.write() += 1;
+                                            },
+                                            if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
+                                                "{status_percent.read():.0}% ..."
+                                            } else {
+                                                "⚡ {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             // 4. Mandatory Core: OptiScaler DLSS-NR
                             div { class: if crate::core::downloader::is_optiscaler_cached() { "addon on" } else { "addon" },
                                 div { class: "mark",
@@ -2232,12 +2277,12 @@ pub fn App() -> Element {
                                 }
                                 div { class: "body",
                                     div { class: "t",
-                                        "OptiScaler DLSS-NR (Neural Reconstruction & Pre-SR)"
+                                        "OptiScaler DLSS-NR (with RTX 40 MFG Integration)"
                                         span { class: "tag", "{crate::core::i18n::t(&current_lang.read(), \"tag_neural_reconstruction\")}" }
                                     }
-                                    div { class: "d", "OptiScaler.dll + nvngx.ini · v0.8.4 · {crate::core::i18n::t(&current_lang.read(), \"meta_native_backend\")} · 18.4 MB" }
+                                    div { class: "d", "OptiScaler.dll + nvngx.ini · Latest rtx40-mfg Build · {crate::core::i18n::t(&current_lang.read(), \"meta_native_backend\")} · ~18 MB" }
                                     div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} {crate::core::downloader::OPTISCALER_084_URL}"
+                                        "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass"
                                     }
                                     div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
                                         "{crate::core::i18n::t(&current_lang.read(), \"addon_optiscaler_desc\")}"
@@ -3208,10 +3253,9 @@ pub fn App() -> Element {
                         let is_dx12 = api_lower.contains("12") || api_lower.contains("d3d12");
                         let is_vulkan = api_lower.contains("vulkan");
                         let is_dx11 = (api_lower.contains("11") || api_lower == "d3d11") && !is_dx12;
-                        target_game.can_inject_fg = target_game.bitness == 64 && has_native_dlss && !target_game.has_frame_generation && (is_dx12 || is_vulkan);
+                        target_game.can_inject_fg = target_game.bitness == 64 && has_native_dlss && !target_game.has_frame_generation && (is_dx12 || is_dx11);
                         let opti_advisory = crate::core::install_routes::get_optiscaler_advisory(&target_game);
                         let native_advisory = crate::core::install_routes::get_native_dlss_advisory(&target_game);
-                        let mfg_advisory = crate::core::install_routes::get_mfg_advisory(&target_game, primary_gpu.is_rtx_40);
                         let ac_warning = target_game.has_anti_cheat;
                         let _has_dlss = target_game.dlss_version.is_some();
                         let cur_backend = backend_choice.read().clone();
@@ -3226,6 +3270,12 @@ pub fn App() -> Element {
                         } else {
                             "feeder".to_string()
                         };
+                        let mfg_advisory = crate::core::install_routes::get_mfg_advisory_with_route(
+                            &target_game,
+                            primary_gpu.is_rtx_40,
+                            Some(&effective_backend),
+                            Some(&effective_route),
+                        );
 
                         let mut active_advisories: Vec<crate::core::install_routes::RouteAdvisory> = Vec::new();
                         if effective_backend == "optiscaler" {
@@ -3242,7 +3292,7 @@ pub fn App() -> Element {
                                 active_advisories.push(adv.clone());
                             }
                         }
-                        let has_override = !active_advisories.is_empty();
+                        let has_override = active_advisories.iter().any(|a| a.severity == crate::core::install_routes::AdvisorySeverity::Warning);
 
                         let show_mfg = true;
                         let show_pre_sr = effective_backend == "optiscaler";
@@ -3258,7 +3308,7 @@ pub fn App() -> Element {
                         } else {
                             crate::core::i18n::t(&current_lang.read(), "feeder_label_general")
                         };
-                        let opti_display = if opti_advisory.is_some() {
+                        let opti_display = if opti_advisory.as_ref().map(|a| a.severity == crate::core::install_routes::AdvisorySeverity::Warning).unwrap_or(false) {
                             format!("{} ⚠️", crate::core::i18n::t(&current_lang.read(), "opt_optiscaler_dlssnr"))
                         } else {
                             crate::core::i18n::t(&current_lang.read(), "opt_optiscaler_dlssnr").to_string()
@@ -3463,7 +3513,11 @@ pub fn App() -> Element {
                                                                     let api_lower_opt = opt.api.to_lowercase();
                                                                     let is_dx12_opt = api_lower_opt.contains("12") || api_lower_opt.contains("d3d12");
                                                                     let is_vulkan_opt = api_lower_opt.contains("vulkan");
-                                                                    current_games[pos].can_inject_fg = opt.bitness == 64 && has_native_dlss && !current_games[pos].has_frame_generation && (is_dx12_opt || is_vulkan_opt);
+                                                                    let is_dx11_opt = (api_lower_opt.contains("11") || api_lower_opt == "d3d11") && !is_dx12_opt;
+                                                                    if is_vulkan_opt || is_dx11_opt {
+                                                                        current_games[pos].has_frame_generation = false;
+                                                                    }
+                                                                    current_games[pos].can_inject_fg = opt.bitness == 64 && has_native_dlss && !current_games[pos].has_frame_generation && (is_dx12_opt || is_dx11_opt);
 
                                                                     // Only auto-adjust route on exe switch if no deploys have been made at all (unpatched)
                                                                     let is_deployed = current_games[pos].installed_route.is_some()
@@ -3554,10 +3608,15 @@ pub fn App() -> Element {
                                     }
                                     div { class: "spec",
                                         span { class: "k", "{crate::core::i18n::t(&current_lang.read(), \"spec_frame_generation\")}" }
-                                        if target_game.has_frame_generation {
-                                            span { class: "v on", "{crate::core::i18n::t(&current_lang.read(), \"val_fg_supported\")}" }
-                                        } else {
-                                            span { class: "v", "{crate::core::i18n::t(&current_lang.read(), \"val_fg_unsupported\")}" }
+                                        {
+                                            let (fg_status_label, fg_is_on) = crate::core::install_routes::frame_generation_status(&target_game);
+                                            rsx! {
+                                                if fg_is_on {
+                                                    span { class: "v on", "{fg_status_label}" }
+                                                } else {
+                                                    span { class: "v", "{fg_status_label}" }
+                                                }
+                                            }
                                         }
                                     }
                                     div { class: "spec",
@@ -3619,17 +3678,33 @@ pub fn App() -> Element {
                                 }
 
                                 for adv in &active_advisories {
-                                    div {
-                                        class: "emu-note incompatibility-warning",
-                                        b { "{crate::core::i18n::t_param(&current_lang.read(), \"advisory_warning_high\", &adv.title)}" }
-                                        p { class: "advisory-intro", "{crate::core::i18n::t(&current_lang.read(), \"advisory_intro_restrictions\")}" }
-                                        ul { class: "advisory-reasons",
-                                            for reason in &adv.reasons {
-                                                li { "{crate::core::i18n::translate_advisory_reason(&current_lang.read(), reason)}" }
+                                    {
+                                        let is_info = adv.severity == crate::core::install_routes::AdvisorySeverity::Info;
+                                        let card_class = if is_info { "emu-note info-notice" } else { "emu-note incompatibility-warning" };
+                                        let title_text = if is_info {
+                                            crate::core::i18n::t_param(&current_lang.read(), "advisory_notice_info", &adv.title)
+                                        } else {
+                                            crate::core::i18n::t_param(&current_lang.read(), "advisory_warning_high", &adv.title)
+                                        };
+                                        let intro_text = if is_info {
+                                            crate::core::i18n::t(&current_lang.read(), "advisory_intro_info")
+                                        } else {
+                                            crate::core::i18n::t(&current_lang.read(), "advisory_intro_restrictions")
+                                        };
+                                        rsx! {
+                                            div {
+                                                class: "{card_class}",
+                                                b { "{title_text}" }
+                                                p { class: "advisory-intro", "{intro_text}" }
+                                                ul { class: "advisory-reasons",
+                                                    for reason in &adv.reasons {
+                                                        li { "{crate::core::i18n::translate_advisory_reason(&current_lang.read(), reason)}" }
+                                                    }
+                                                }
+                                                div { class: "advisory-footer",
+                                                    span { "{crate::core::i18n::translate_advisory_recommendation(&current_lang.read(), &adv.recommendation)}" }
+                                                }
                                             }
-                                        }
-                                        div { class: "advisory-footer",
-                                            span { "{crate::core::i18n::translate_advisory_recommendation(&current_lang.read(), &adv.recommendation)}" }
                                         }
                                     }
                                 }
@@ -3957,6 +4032,8 @@ pub fn App() -> Element {
                                                                             }
                                                                         }
                                                                     }
+
+
 
                                                                     // Perform deployment in blocking task
                                                                     let b_task = cur_eff_backend.clone();

@@ -66,3 +66,10 @@ fn test_build_patch_produces_correct_x64_bytes() {
     let extracted_addr = usize::from_ne_bytes(patch[6..14].try_into().unwrap());
     assert_eq!(extracted_addr, target_addr);
 }
+
+#[test]
+fn test_pin_module_valid_function() {
+    unsafe {
+        dlss_mip_addon::pin_module(test_pin_module_valid_function as *const ());
+    }
+}
