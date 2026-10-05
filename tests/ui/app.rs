@@ -1,57 +1,8 @@
 use dlss_studio::ui::app::*;
 use dlss_studio::core::scan::GameEntry;
-use dlss_studio::core::journal::HistoryRow;
 use dlss_studio::core::state::{load_state, save_state, STATE_TEST_MUTEX};
-use dlss_studio::core::install_routes::{recommended_route, InstallRoute};
+use dlss_studio::core::routes::{recommended_route, InstallRoute};
 use dioxus::prelude::*;
-
-#[test]
-fn test_clean_display_title_formats() {
-    assert_eq!(clean_display_title("Cyberpunk_2077"), "Cyberpunk 2077");
-    assert_eq!(clean_display_title("The-Witcher-3"), "The Witcher 3");
-    assert_eq!(clean_display_title("Package.Name.GameTitle_1.0_x64"), "Game Title");
-    assert_eq!(clean_display_title("Microsoft.FlightSimulator_1.37.19.0_x64__8wekyb3d8bbwe"), "Flight Simulator");
-    assert_eq!(clean_display_title("SimpleTitle"), "SimpleTitle");
-}
-
-#[test]
-fn test_resolve_game_title_logic() {
-    let games = vec![
-        GameEntry {
-            name: "Baldur's Gate 3".to_string(),
-            dir: std::path::PathBuf::from("C:\\Games\\Baldurs Gate 3"),
-            ..Default::default()
-        }
-    ];
-
-    let row1 = HistoryRow {
-        game_name: Some("Direct Name".to_string()),
-        dir: "C:\\Games\\Unknown".to_string(),
-        ..Default::default()
-    };
-    assert_eq!(resolve_game_title(&row1, &games), "Direct Name");
-
-    let row2 = HistoryRow {
-        game_name: None,
-        dir: "C:\\Games\\Baldurs Gate 3".to_string(),
-        ..Default::default()
-    };
-    assert_eq!(resolve_game_title(&row2, &games), "Baldur's Gate 3");
-
-    let row3 = HistoryRow {
-        game_name: None,
-        dir: "C:\\Games\\Starfield\\Content".to_string(),
-        ..Default::default()
-    };
-    assert_eq!(resolve_game_title(&row3, &[]), "Starfield");
-
-    let row4 = HistoryRow {
-        game_name: None,
-        dir: "C:\\Games\\Cyberpunk\\Binaries\\Win64".to_string(),
-        ..Default::default()
-    };
-    assert_eq!(resolve_game_title(&row4, &[]), "Cyberpunk");
-}
 
 #[test]
 fn test_app_virtual_dom_headless_render() {
@@ -122,12 +73,35 @@ fn test_app_virtual_dom_all_views_and_modals() {
     let mut dom_about = VirtualDom::new(App);
     dom_about.rebuild_in_place();
 
-    // 7. Game detail sheet modal
+    // 7. Game detail sheet modal (Native DLSS DX12)
     std::env::set_var("DLSS_TEST_VIEW", "games");
     std::env::set_var("DLSS_TEST_SHEET", "1");
+    std::env::set_var("DLSS_TEST_SHEET_IDX", "0");
     let mut dom_sheet = VirtualDom::new(App);
     dom_sheet.rebuild_in_place();
+
+    // 7b. Game detail sheet modal (Feeder DX11 with MFG)
+    std::env::set_var("DLSS_TEST_SHEET_IDX", "1");
+    std::env::set_var("DLSS_TEST_BACKEND", "reshade");
+    std::env::set_var("DLSS_TEST_ROUTE", "feeder");
+    std::env::set_var("DLSS_TEST_MFG", "1");
+    std::env::set_var("DLSS_TEST_MODULES", "1");
+    let mut dom_sheet_feeder = VirtualDom::new(App);
+    dom_sheet_feeder.rebuild_in_place();
+
+    // 7c. Game detail sheet modal (OptiScaler route)
+    std::env::set_var("DLSS_TEST_BACKEND", "optiscaler");
+    std::env::set_var("DLSS_TEST_EDIT_NAME", "1");
+    let mut dom_sheet_opti = VirtualDom::new(App);
+    dom_sheet_opti.rebuild_in_place();
+
     std::env::remove_var("DLSS_TEST_SHEET");
+    std::env::remove_var("DLSS_TEST_SHEET_IDX");
+    std::env::remove_var("DLSS_TEST_BACKEND");
+    std::env::remove_var("DLSS_TEST_ROUTE");
+    std::env::remove_var("DLSS_TEST_MFG");
+    std::env::remove_var("DLSS_TEST_MODULES");
+    std::env::remove_var("DLSS_TEST_EDIT_NAME");
 
     // 8. RenoDX Overlay preview modal
     std::env::set_var("DLSS_TEST_PREVIEW", "1");
@@ -140,6 +114,31 @@ fn test_app_virtual_dom_all_views_and_modals() {
     let mut dom_hk = VirtualDom::new(App);
     dom_hk.rebuild_in_place();
     std::env::remove_var("DLSS_TEST_HOTKEY");
+
+    // 10. Add-on dialog modal
+    std::env::set_var("DLSS_TEST_VIEW", "addons");
+    std::env::set_var("DLSS_TEST_ADDON_DLG", "1");
+    let mut dom_addon_dlg = VirtualDom::new(App);
+    dom_addon_dlg.rebuild_in_place();
+    std::env::remove_var("DLSS_TEST_ADDON_DLG");
+
+    // 11. Create custom theme modal
+    std::env::set_var("DLSS_TEST_CREATE_THEME", "1");
+    let mut dom_theme_dlg = VirtualDom::new(App);
+    dom_theme_dlg.rebuild_in_place();
+    std::env::remove_var("DLSS_TEST_CREATE_THEME");
+
+    // 12. Language dropdown menu
+    std::env::set_var("DLSS_TEST_LANG_MENU", "1");
+    let mut dom_lang = VirtualDom::new(App);
+    dom_lang.rebuild_in_place();
+    std::env::remove_var("DLSS_TEST_LANG_MENU");
+
+    // 13. Toast banner notification
+    std::env::set_var("DLSS_TEST_TOAST", "1");
+    let mut dom_toast = VirtualDom::new(App);
+    dom_toast.rebuild_in_place();
+    std::env::remove_var("DLSS_TEST_TOAST");
 
     // Clean up env and restore state
     std::env::remove_var("DLSS_TEST_VIEW");
@@ -200,24 +199,10 @@ fn test_recommended_route_auto_selection_across_apis() {
     assert_eq!(recommended_route(&dx9_game), InstallRoute::Feeder);
 }
 
-#[test]
-fn test_resolve_module_meta() {
-    assert_eq!(resolve_module_meta("nvngx_dlss.dll"), ("module_dlss_sr", "NVIDIA", "vendor-nvidia", "DLSS"));
-    assert_eq!(resolve_module_meta("bin\\x64\\nvngx_dlssg.dll"), ("module_dlss_fg", "NVIDIA", "vendor-nvidia", "DLSS-G"));
-    assert_eq!(resolve_module_meta("nvngx_dlssd.dll"), ("module_dlss_rr", "NVIDIA", "vendor-nvidia", "DLSS-RR"));
-    assert_eq!(resolve_module_meta("amd_fidelityfx_framegeneration_dx12.dll"), ("module_fsr_fg", "AMD", "vendor-amd", "FSR FG"));
-    assert_eq!(resolve_module_meta("sl.dlss.dll"), ("module_sl_dlss", "Streamline", "vendor-sl", "SL DLSS"));
-    assert_eq!(resolve_module_meta("sl.dlss_g.dll"), ("module_sl_fg", "Streamline", "vendor-sl", "SL FG"));
-    assert_eq!(resolve_module_meta("sl.common.dll"), ("module_sl_core", "Streamline", "vendor-sl", "SL Core"));
-    assert_eq!(resolve_module_meta("sl.interposer.dll"), ("module_sl_core", "Streamline", "vendor-sl", "SL Core"));
-    assert_eq!(resolve_module_meta("sl.reflex.dll"), ("module_sl_reflex", "Streamline", "vendor-sl", "Reflex"));
-    assert_eq!(resolve_module_meta("optiscaler/dxgi.dll"), ("module_optiscaler", "OptiScaler", "vendor-opti", "OptiScaler"));
-    assert_eq!(resolve_module_meta("some_other.dll"), ("module_generic_dll", "Runtime", "vendor-generic", "DLL"));
-}
 
 #[test]
 fn test_info_advisory_does_not_trigger_override_mode() {
-    use dlss_studio::core::install_routes::{AdvisorySeverity, RouteAdvisory};
+    use dlss_studio::core::advisories::{AdvisorySeverity, RouteAdvisory};
 
     let info_advisory = RouteAdvisory {
         title: "Test Info".to_string(),

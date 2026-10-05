@@ -4,7 +4,6 @@ use base64::Engine;
 use dioxus::desktop::tao::window::Icon as TaoIcon;
 use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
 use dioxus::prelude::*;
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -69,7 +68,6 @@ fn detect_initial_language() -> String {
     i18n::detect_system_language()
 }
 
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 static PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/installer_payload.bin"));
 static APP_ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
@@ -121,19 +119,9 @@ fn main() {
         // If running directly from within the installation folder, delegate to trampoline worker in %TEMP%
         // so that Windows unlocks uninstall.exe and allows the entire directory to be purged!
         if !is_worker {
-            let temp_dir = std::env::temp_dir();
-            let pid = std::process::id();
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0);
-            let temp_worker = temp_dir.join(format!("dlss_studio_uninstall_{}_{}.exe", pid, timestamp));
-
-            // Also clean up any legacy fixed uninstaller worker in %TEMP%
-            let legacy_worker = temp_dir.join("dlss_studio_uninstall.exe");
-            if legacy_worker.exists() {
-                let _ = std::fs::remove_file(&legacy_worker);
-            }
+            let temp_setup_dir = std::env::temp_dir().join("DLSS5Studio_Setup");
+            let _ = std::fs::create_dir_all(&temp_setup_dir);
+            let temp_worker = temp_setup_dir.join("uninstall_worker.exe");
 
             if let Some(ref curr) = curr_exe {
                 if curr != &temp_worker {
@@ -1380,38 +1368,36 @@ fn SetupApp() -> Element {
 
 /// Creates a Windows shell shortcut (.lnk) using Win32 COM APIs natively
 fn create_shortcut(target_exe: &Path, shortcut_path: &Path, description: &str) -> Result<(), String> {
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, IPersistFile};
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, IPersistFile};
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
     use windows::core::{Interface, HSTRING};
 
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
-            .map_err(|e| format!("CoCreateInstance ShellLink failed: {:?}", e))?;
+        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let should_uninit = hr.is_ok();
 
-        let target_str = target_exe.to_string_lossy().to_string();
-        link.SetPath(&HSTRING::from(target_str.clone()))
-            .map_err(|e| format!("SetPath failed: {:?}", e))?;
+        let link_res: Result<IShellLinkW, _> = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER);
+        if let Ok(link) = link_res {
+            let target_str = target_exe.to_string_lossy().to_string();
+            let _ = link.SetPath(&HSTRING::from(target_str.clone()));
+            let _ = link.SetIconLocation(&HSTRING::from(target_str.clone()), 0);
 
-        let _ = link.SetIconLocation(&HSTRING::from(target_str.clone()), 0);
+            if let Some(parent) = target_exe.parent() {
+                let working_dir = parent.to_string_lossy().to_string();
+                let _ = link.SetWorkingDirectory(&HSTRING::from(working_dir));
+            }
 
-        if let Some(parent) = target_exe.parent() {
-            let working_dir = parent.to_string_lossy().to_string();
-            link.SetWorkingDirectory(&HSTRING::from(working_dir))
-                .map_err(|e| format!("SetWorkingDirectory failed: {:?}", e))?;
+            let _ = link.SetDescription(&HSTRING::from(description));
+
+            if let Ok(persist) = link.cast::<IPersistFile>() {
+                let shortcut_str = shortcut_path.to_string_lossy().to_string();
+                let _ = persist.Save(&HSTRING::from(shortcut_str), true);
+            }
         }
 
-        link.SetDescription(&HSTRING::from(description))
-            .map_err(|e| format!("SetDescription failed: {:?}", e))?;
-
-        let persist: IPersistFile = link.cast()
-            .map_err(|e| format!("Cast to IPersistFile failed: {:?}", e))?;
-
-        let shortcut_str = shortcut_path.to_string_lossy().to_string();
-        persist.Save(&HSTRING::from(shortcut_str), true)
-            .map_err(|e| format!("Save shortcut failed: {:?}", e))?;
-
-        CoUninitialize();
+        if should_uninit {
+            CoUninitialize();
+        }
     }
     Ok(())
 }
@@ -1560,6 +1546,93 @@ fn unregister_uninstall_entry() {
     }
 }
 
+/// Terminates running instances of DLSS Studio using pure native Win32 APIs
+fn terminate_target_processes(process_names: &[&str]) {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    use windows::Win32::Foundation::CloseHandle;
+
+    let target_names: Vec<String> = process_names.iter().map(|s| s.to_lowercase()).collect();
+
+    unsafe {
+        if let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
+            let mut entry = PROCESSENTRY32W::default();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+            if Process32FirstW(snapshot, &mut entry).is_ok() {
+                loop {
+                    let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+                    let name = String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase();
+                    if target_names.iter().any(|t| *t == name) {
+                        if let Ok(handle) = OpenProcess(PROCESS_TERMINATE, false, entry.th32ProcessID) {
+                            let _ = TerminateProcess(handle, 0);
+                            let _ = CloseHandle(handle);
+                        }
+                    }
+
+                    if Process32NextW(snapshot, &mut entry).is_err() {
+                        break;
+                    }
+                }
+            }
+            let _ = CloseHandle(snapshot);
+        }
+    }
+}
+
+/// Sets or removes the Windows HKCU Run startup entry for DLSS Studio using native Win32 Registry APIs
+fn set_windows_startup_registry(installed_exe: &Path, enable: bool) {
+    use windows::Win32::System::Registry::{
+        RegOpenKeyExW, RegSetValueExW, RegDeleteValueW, RegCloseKey, HKEY_CURRENT_USER, KEY_WRITE, REG_SZ,
+    };
+    let subkey = to_wide(r"Software\Microsoft\Windows\CurrentVersion\Run");
+    let val_name = to_wide("DLSS5Studio");
+    let mut hkey = windows::Win32::System::Registry::HKEY::default();
+    unsafe {
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            windows::core::PCWSTR(subkey.as_ptr()),
+            0,
+            KEY_WRITE,
+            &mut hkey,
+        ).is_ok() {
+            if enable {
+                let cmd = format!("\"{}\" --background", installed_exe.display());
+                let val_data = to_wide(&cmd);
+                let bytes = std::slice::from_raw_parts(val_data.as_ptr() as *const u8, val_data.len() * 2);
+                let _ = RegSetValueExW(
+                    hkey,
+                    windows::core::PCWSTR(val_name.as_ptr()),
+                    0,
+                    REG_SZ,
+                    Some(bytes),
+                );
+            } else {
+                let _ = RegDeleteValueW(hkey, windows::core::PCWSTR(val_name.as_ptr()));
+            }
+            let _ = RegCloseKey(hkey);
+        }
+    }
+}
+
+/// Persists background preference directly to library.json without launching child processes
+fn set_background_preference(storage_dest: &Path, run_in_background: bool) {
+    let update_state = |state_path: &Path| {
+        let mut data: serde_json::Value = if let Ok(c) = std::fs::read_to_string(state_path) {
+            serde_json::from_str(&c).unwrap_or(serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+        if let Some(obj) = data.as_object_mut() {
+            obj.insert("run_in_background".to_string(), serde_json::Value::Bool(run_in_background));
+        }
+        let _ = std::fs::write(state_path, serde_json::to_string_pretty(&data).unwrap_or_default());
+    };
+    update_state(&storage_dest.join("library.json"));
+}
+
 /// Executes the pure native installation
 fn run_installation_pipeline(
     target_folder: String,
@@ -1573,12 +1646,9 @@ fn run_installation_pipeline(
     std::fs::create_dir_all(&dest)
         .map_err(|e| format!("Could not create directory {}: {}", dest.display(), e))?;
 
-    // 1. Force close any running background instances of dlss-studio before overwriting
-    let _ = std::process::Command::new("taskkill")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args(["/F", "/IM", "dlss-studio.exe", "/IM", "dlss5-swapper-rust.exe", "/IM", "dlss5-swapper-rust-portable.exe"])
-        .status();
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    // 1. Force close any running instances of dlss-studio via pure native Win32 process API
+    terminate_target_processes(&["dlss-studio.exe", "dlss-studio-portable.exe", "dlss5-swapper-rust.exe", "dlss5-swapper-rust-portable.exe"]);
+    std::thread::sleep(std::time::Duration::from_millis(150));
 
     // Determine payload bytes:
     let payload_data: Vec<u8> = if !PAYLOAD.is_empty() {
@@ -1604,11 +1674,8 @@ fn run_installation_pipeline(
     if write_res.is_err() {
         // Attempt extra process cleanup in case Windows held onto the handle briefly
         for _ in 0..3 {
-            let _ = std::process::Command::new("taskkill")
-                .creation_flags(CREATE_NO_WINDOW)
-                .args(["/F", "/IM", "dlss-studio.exe", "/IM", "dlss5-swapper-rust.exe", "/IM", "dlss5-swapper-rust-portable.exe"])
-                .status();
-            std::thread::sleep(std::time::Duration::from_millis(400));
+            terminate_target_processes(&["dlss-studio.exe", "dlss-studio-portable.exe", "dlss5-swapper-rust.exe", "dlss5-swapper-rust-portable.exe"]);
+            std::thread::sleep(std::time::Duration::from_millis(200));
             write_res = std::fs::write(&installed_exe, &payload_data);
             if write_res.is_ok() {
                 break;
@@ -1647,11 +1714,6 @@ fn run_installation_pipeline(
         let _ = std::fs::write(lib_path, serde_json::to_string_pretty(&data).unwrap_or_default());
     };
     update_library_lang(&storage_dest.join("library.json"));
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let default_appdata_dir = PathBuf::from(appdata).join("dlss-5-studio");
-        let _ = std::fs::create_dir_all(&default_appdata_dir);
-        update_library_lang(&default_appdata_dir.join("library.json"));
-    }
 
     // Copy setup.exe as uninstall.exe in target folder (prevent copying onto itself)
     if let Ok(curr) = std::env::current_exe() {
@@ -1687,19 +1749,9 @@ fn run_installation_pipeline(
     // Register in Windows Installed Apps
     let _ = register_uninstall_entry(&dest, &installed_exe);
 
-    // Apply startup & background preferences
-    if startup {
-        let _ = std::process::Command::new(&installed_exe)
-            .creation_flags(CREATE_NO_WINDOW)
-            .arg("--enable-startup-only")
-            .status();
-    }
-    if !background {
-        let _ = std::process::Command::new(&installed_exe)
-            .creation_flags(CREATE_NO_WINDOW)
-            .arg("--disable-background-only")
-            .status();
-    }
+    // Apply startup & background preferences natively (zero child subprocess overhead)
+    set_windows_startup_registry(&installed_exe, startup);
+    set_background_preference(&storage_dest, background);
 
     Ok(())
 }
@@ -1735,12 +1787,9 @@ fn perform_native_uninstall(silent: bool) {
 /// Executes the full native uninstall worker operations: closing processes, purging files,
 /// unregistering shortcuts and registry keys, removing the installation directory, and cleaning app data.
 fn perform_native_uninstall_worker(target_install_dir: &Path, delete_appdata: bool) -> Result<(), String> {
-    // 1. Terminate any running instances of dlss-studio
-    let _ = std::process::Command::new("taskkill")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args(["/F", "/IM", "dlss-studio.exe", "/IM", "dlss-studio-portable.exe", "/IM", "dlss5-swapper-rust.exe", "/IM", "dlss5-swapper-rust-portable.exe"])
-        .status();
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // 1. Terminate any running instances of dlss-studio via pure native Win32 process API
+    terminate_target_processes(&["dlss-studio.exe", "dlss-studio-portable.exe", "dlss5-swapper-rust.exe", "dlss5-swapper-rust-portable.exe"]);
+    std::thread::sleep(std::time::Duration::from_millis(200));
 
     // 2. Remove Shortcuts
     if let Ok(appdata) = std::env::var("APPDATA") {
@@ -1814,15 +1863,28 @@ fn perform_native_uninstall_worker(target_install_dir: &Path, delete_appdata: bo
 }
 
 fn schedule_temp_worker_cleanup() {
-    if let Ok(curr) = std::env::current_exe() {
-        if curr.starts_with(std::env::temp_dir()) {
-            let _ = std::process::Command::new("cmd.exe")
-                .creation_flags(CREATE_NO_WINDOW)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .args(["/C", "choice /C Y /N /D Y /T 2 > NUL & del", &format!("\"{}\"", curr.display())])
-                .spawn();
+    #[cfg(windows)]
+    {
+        extern "system" {
+            fn MoveFileExW(
+                lpExistingFileName: *const u16,
+                lpNewFileName: *const u16,
+                dwFlags: u32,
+            ) -> i32;
+        }
+        const MOVEFILE_DELAY_UNTIL_REBOOT: u32 = 0x00000004;
+
+        if let Ok(curr) = std::env::current_exe() {
+            if curr.starts_with(std::env::temp_dir()) {
+                let wide_path = to_wide(&curr.to_string_lossy());
+                unsafe {
+                    let _ = MoveFileExW(
+                        wide_path.as_ptr(),
+                        std::ptr::null(),
+                        MOVEFILE_DELAY_UNTIL_REBOOT,
+                    );
+                }
+            }
         }
     }
 }

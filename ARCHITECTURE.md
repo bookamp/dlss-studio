@@ -16,21 +16,34 @@ flowchart TB
         Overlay["src/core/overlay_bridge.rs<br/>(In-Game RenoDX Companion Sync)"]
     end
 
-    subgraph OS["OS & Win32 Integration Layer"]
-        Tray["src/core/tray.rs<br/>(Native Win32 Shell Tray & Menu)"]
-        SingleInst["src/core/single_instance.rs<br/>(Named Mutex & IPC Wakeup)"]
-        Guards["src/core/install_guards.rs<br/>(Toolhelp32 Process Locking)"]
+    subgraph OS["OS & Win32 Integration Layer (src/core/platform/)"]
+        Tray["src/core/platform/tray.rs<br/>(Native Win32 Shell Tray & Menu)"]
+        Display["src/core/platform/display.rs<br/>(Monitor & Display Topology)"]
+        Gpu["src/core/platform/gpu.rs<br/>(DXGI & Vulkan GPU Enumerator)"]
+        Guards["src/core/platform/process.rs<br/>(Toolhelp32 Process Locking)"]
+        VulkanLayer["src/core/platform/vulkan.rs<br/>(Vulkan Implicit Layer Manager)"]
+    end
+
+    subgraph Utils["Common Utilities (src/core/utils/)"]
+        Ini["src/core/utils/ini.rs<br/>(Robust Case-Insensitive INI Engine)"]
+        PE["src/core/utils/pe.rs<br/>(pelite PE Inspection & LAA Patching)"]
+        Logger["src/core/utils/logger.rs<br/>(Rolling Disk Logger & Telemetry)"]
+        SingleInst["src/core/utils/single_instance.rs<br/>(Named Mutex & IPC Wakeup)"]
     end
 
     subgraph Engine["Core Orchestration & Analysis Engine"]
-        State["src/core/state.rs<br/>(library.json State, Custom Names, Recents)"]
-        Scan["src/core/scan.rs<br/>(Steam, Epic, GOG, Xbox Multi-threaded Scanners)"]
-        PE["src/core/pe.rs<br/>(pelite Header, API, Bitness & Version Parsing)"]
-        Routes["src/core/install_routes.rs<br/>(Compatibility Matrix & Gating)"]
-        Downloader["src/core/downloader.rs<br/>(Payload Fetcher, SHA-256 Verifier)"]
-        VulkanLayer["src/core/vulkan_layer.rs<br/>(Vulkan Implicit Layer Manager)"]
-        Journal["src/core/journal.rs<br/>(Atomic Rollback & Manifest Journaling)"]
-        Deployer["src/core/optiscaler.rs<br/>(Hook Placement, INI Config, Route Cleaning)"]
+        State["src/core/state/<br/>(library.json State, Custom Names, Recents)"]
+        Scan["src/core/scan/<br/>(Steam, Epic, GOG, Xbox Multi-threaded Scanners)"]
+        Routes["src/core/routes/<br/>(Route Factory & Modular Routes)"]
+        Advisories["src/core/advisories/<br/>(Compatibility Matrix & Gating)"]
+        Addons["src/core/addons/<br/>(Catalog Registry, Cache Discovery, Installation)"]
+        Downloader["src/core/downloader/<br/>(Generic Streaming Fetcher & Zip Extractor)"]
+        Journal["src/core/journal/<br/>(Atomic Rollbacks, Manifests, History & Cleanup)"]
+        I18n["src/core/i18n/<br/>(Modular Multi-Language Dictionary Engine)"]
+        PayloadsEngine["src/core/payloads/<br/>(Candidate Discovery, Scoring & Bundles)"]
+        SteamArt["src/core/steamart/<br/>(Query, Image Opt, Cleanup, Resolver)"]
+        Vibepollo["src/core/vibepollo/<br/>(Service Detection, apps.json & Cover Art)"]
+        Compatibility["src/core/compatibility/<br/>(Mod Root & Environment Traversal)"]
     end
 
     subgraph Storage["Filesystem & Mod Target Trees"]
@@ -42,17 +55,18 @@ flowchart TB
 
     App --> State
     App --> Scan
-    App --> Deployer
     App --> Routes
+    App --> Addons
     App --> Overlay
 
     Scan --> PE
-    Deployer --> Guards
-    Deployer --> VulkanLayer
-    Deployer --> Journal
-    Deployer --> Downloader
+    Routes --> Guards
+    Routes --> VulkanLayer
+    Routes --> Journal
+    Routes --> Addons
+    Addons --> Downloader
 
-    Deployer --> GameTarget
+    Routes --> GameTarget
     Journal --> BackupPool
     Downloader --> Payloads
     State --> AppData
@@ -126,9 +140,9 @@ DLSS Studio packages essential components locally and dynamically retrieves upda
 sequenceDiagram
     autonumber
     participant UI as Dioxus UI
-    participant Deploy as optiscaler.rs / deploy_*
+    participant Deploy as routes::deploy_*
     participant Bundle as PayloadBundle::from_system()
-    participant DL as downloader.rs
+    participant DL as downloader::client
     participant CDN as Verified Upstream (GitHub / NVIDIA / RenoDX)
     participant FS as Local Filesystem Cache
 

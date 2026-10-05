@@ -15,3 +15,11 @@ fn test_sleep_inhibitor_raii() {
     assert!(guard.active);
     drop(guard);
 }
+
+#[test]
+fn test_find_preferred_display() {
+    let pref = find_preferred_display();
+    // On systems with a display attached, pref will be Some
+    let _ = pref;
+}
+

@@ -47,8 +47,8 @@ fn test_bp_logger_rolling_prune() {
 
     // Write an old entry (from 2021) and a recent entry
     let old_entry = "[2021-01-01 00:00:00.000] [INFO] [bp::supervisor] Stale session log\n";
-    let new_entry = "[2026-09-20 12:00:00.000] [INFO] [bp::supervisor] Active session log\n";
-    fs::write(&test_log, format!("{}{}", old_entry, new_entry)).unwrap();
+    fs::write(&test_log, old_entry).unwrap();
+    dlss_studio::core::logger::log_to_file(&test_log, "INFO", "bp::supervisor", "Active session log");
 
     // Prune test file
     dlss_studio::core::logger::prune_log_file(&test_log);

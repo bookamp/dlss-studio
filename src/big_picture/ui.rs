@@ -8,7 +8,6 @@
 //!
 //! Uses the EXACT routing arbitration, recommendation engine, and advisory logic from the desktop app (`src/ui/app.rs`).
 
-use dioxus::desktop::use_window;
 use dioxus::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -17,14 +16,13 @@ use tokio::sync::mpsc;
 use super::gamepad::{detect_controller_kind, start_gamepad_listener, GamepadNavAction};
 use super::supervisor::launch_and_supervise;
 use super::tv::TvSleepInhibitor;
-use crate::core::install_routes::{
-    get_mfg_advisory_with_route, get_native_dlss_advisory, get_optiscaler_advisory, recommended_route, InstallRoute,
+use crate::core::advisories::{
+    get_mfg_advisory_with_route, get_native_dlss_advisory, get_optiscaler_advisory,
     RouteAdvisory,
 };
+use crate::core::routes::{recommended_route, InstallRoute, RouteFactory};
 use crate::core::journal::restore_game;
-use crate::core::optiscaler::{
-    deploy_feeder_with_bundle, deploy_native_dlss5, deploy_optiscaler, DeployOptions, PayloadBundle,
-};
+use crate::core::routes::DeployOptions;
 use crate::core::scan::{GameEntry, GameExeOption};
 
 pub const BP_STYLE_CSS: &str = include_str!("../../assets/big_picture/style.css");
@@ -287,17 +285,17 @@ pub fn apply_cycled_exe(
             || current_games[pos].reshade_installed
             || current_games[pos].has_backup;
         if !is_deployed {
-            let rec = crate::core::install_routes::recommended_route(&current_games[pos]);
+            let rec = recommended_route(&current_games[pos]);
             match rec {
-                crate::core::install_routes::InstallRoute::Native => {
+                InstallRoute::Native => {
                     backend_choice.set("reshade".to_string());
                     route_choice.set("native".to_string());
                 }
-                crate::core::install_routes::InstallRoute::Feeder => {
+                InstallRoute::Feeder => {
                     backend_choice.set("reshade".to_string());
                     route_choice.set("feeder".to_string());
                 }
-                crate::core::install_routes::InstallRoute::OptiScaler => {
+                InstallRoute::OptiScaler => {
                     backend_choice.set("optiscaler".to_string());
                     route_choice.set("optiscaler".to_string());
                 }
@@ -312,30 +310,83 @@ pub fn apply_cycled_exe(
 }
 
 
-/// Restores normal desktop window geometry upon exiting Big Picture mode.
+#[derive(Clone, Default)]
+pub struct OptionalDesktopContext(pub Option<dioxus::desktop::DesktopContext>);
+
+impl OptionalDesktopContext {
+    pub fn set_always_on_top(&self, val: bool) {
+        if let Some(ref d) = self.0 { d.set_always_on_top(val); }
+    }
+    pub fn set_fullscreen(&self, val: bool) {
+        if let Some(ref d) = self.0 { d.set_fullscreen(val); }
+    }
+    pub fn set_maximized(&self, val: bool) {
+        if let Some(ref d) = self.0 { d.set_maximized(val); }
+    }
+    pub fn set_focus(&self) {
+        if let Some(ref d) = self.0 { d.set_focus(); }
+    }
+    pub fn set_inner_size(&self, size: dioxus::desktop::LogicalSize<f64>) {
+        if let Some(ref d) = self.0 { d.set_inner_size(size); }
+    }
+}
+
+/// Restores normal desktop window geometry upon exiting Big Picture mode,
+/// or disconnects streaming session cleanly if launched directly by Sunshine.
 pub fn exit_big_picture(
-    desktop: dioxus::desktop::DesktopContext,
+    desktop: OptionalDesktopContext,
     mut is_open: Signal<bool>,
     mut show_exit_confirm: Signal<bool>,
+    is_launching: Option<Signal<bool>>,
+    launch_overlay: Option<Signal<Option<LaunchOverlayInfo>>>,
+    lang: String,
 ) {
-    crate::big_picture::logger::info("ui", "exit_big_picture: un-fullscreening, stripping topmost, and restoring standard desktop geometry");
-    desktop.set_always_on_top(false);
-    desktop.set_fullscreen(false);
-    desktop.set_maximized(false);
-    desktop.set_inner_size(dioxus::desktop::LogicalSize::new(
-        crate::core::display::DEFAULT_DESKTOP_WIDTH as f64,
-        crate::core::display::DEFAULT_DESKTOP_HEIGHT as f64,
-    ));
-    crate::core::display::restore_desktop_window_geometry();
-    is_open.set(false);
+    crate::big_picture::logger::info("ui", "exit_big_picture: initiating exit transition");
     show_exit_confirm.set(false);
 
-    // Follow-up restore after OS window manager completes un-fullscreen animation
+    if let (Some(mut is_launching_sig), Some(mut launch_overlay_sig)) = (is_launching, launch_overlay) {
+        launch_overlay_sig.set(resolve_launch_overlay_state(
+            LaunchLifecycleStage::ExitingBigPicture,
+            "",
+            None,
+            &lang,
+        ));
+        is_launching_sig.set(true);
+    }
+
+    crate::core::vibepollo::signal_stream_session_exit();
+    let was_started_in_bp = crate::big_picture::was_started_in_big_picture();
+
     dioxus::prelude::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        desktop.set_always_on_top(false);
-        crate::core::display::restore_desktop_window_geometry();
-        crate::core::display::ensure_window_not_stranded();
+        // Hold transition briefly (120ms) so the exit transition screen renders cleanly
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+        if was_started_in_bp {
+            crate::big_picture::logger::info("ui", "exit_big_picture: was started in Big Picture mode; spawning detached desktop instance and terminating to disconnect Sunshine stream");
+            crate::core::vibepollo::spawn_detached_desktop_instance();
+            std::process::exit(0);
+        } else {
+            crate::big_picture::logger::info("ui", "exit_big_picture: un-fullscreening, stripping topmost, and restoring standard desktop geometry");
+            desktop.set_always_on_top(false);
+            desktop.set_fullscreen(false);
+            desktop.set_maximized(false);
+            desktop.set_inner_size(dioxus::desktop::LogicalSize::new(
+                crate::core::display::DEFAULT_DESKTOP_WIDTH as f64,
+                crate::core::display::DEFAULT_DESKTOP_HEIGHT as f64,
+            ));
+            crate::core::display::restore_desktop_window_geometry();
+
+            if let (Some(mut is_launching_sig), Some(mut launch_overlay_sig)) = (is_launching, launch_overlay) {
+                is_launching_sig.set(false);
+                launch_overlay_sig.set(None);
+            }
+            is_open.set(false);
+
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            desktop.set_always_on_top(false);
+            crate::core::display::restore_desktop_window_geometry();
+            crate::core::display::ensure_window_not_stranded();
+        }
     });
 }
 
@@ -455,6 +506,10 @@ pub enum LaunchLifecycleStage {
     RunningInForeground,
     /// Game process has terminated; transition overlay displayed before return
     ReturningToBigPicture,
+    /// Entering Big Picture mode transition overlay
+    EnteringBigPicture,
+    /// Exiting Big Picture mode transition overlay
+    ExitingBigPicture,
     /// Return transition completed; overlay dismissed and library grid revealed
     Completed,
 }
@@ -474,6 +529,16 @@ pub fn resolve_launch_overlay_state(
         }),
         LaunchLifecycleStage::RunningInForeground | LaunchLifecycleStage::ReturningToBigPicture => Some(LaunchOverlayInfo {
             title: crate::core::i18n::t(lang, "bp_returning_to_bp").to_string(),
+            poster_url,
+            is_exiting: true,
+        }),
+        LaunchLifecycleStage::EnteringBigPicture => Some(LaunchOverlayInfo {
+            title: crate::core::i18n::t(lang, "bp_entering_title").to_string(),
+            poster_url,
+            is_exiting: false,
+        }),
+        LaunchLifecycleStage::ExitingBigPicture => Some(LaunchOverlayInfo {
+            title: crate::core::i18n::t(lang, "bp_exiting_title").to_string(),
             poster_url,
             is_exiting: true,
         }),
@@ -596,8 +661,11 @@ pub struct BigPictureProps {
 
 #[component]
 pub fn BigPictureOverlay(props: BigPictureProps) -> Element {
-    let desktop = use_window();
+    let desktop = OptionalDesktopContext(try_consume_context::<dioxus::desktop::DesktopContext>());
     let _sleep_guard = use_hook(|| Arc::new(TvSleepInhibitor::acquire()));
+    use_hook(|| {
+        crate::core::vibepollo::reset_stream_session_event();
+    });
 
     let brand_badge_data_uri = use_hook(|| {
         use base64::Engine;
@@ -607,19 +675,64 @@ pub fn BigPictureOverlay(props: BigPictureProps) -> Element {
 
     let mut selected_store = use_signal(|| "All".to_string());
     let mut focused_idx = use_signal(|| 0usize);
-    let mut show_options = use_signal(|| false);
-    let mut show_exit_confirm = use_signal(|| false);
+    let init_show_options = std::env::var("DLSS_TEST_BP_OPTIONS").is_ok();
+    let mut show_options = use_signal(move || init_show_options);
+    let init_show_exit = std::env::var("DLSS_TEST_BP_EXIT").is_ok();
+    let mut show_exit_confirm = use_signal(move || init_show_exit);
     let mut exit_confirm_idx = use_signal(|| 1usize); // 0 = Exit, 1 = Cancel
-    let mut options_col = use_signal(|| 0usize); // 0 = Left Column (Profiles), 1 = Right Column (Feature Tuning)
-    let mut options_sub_idx = use_signal(|| 0usize); // In Column 1: 0 = Card/Checkbox, 1 = Stepper
-    let mut options_profile_idx = use_signal(|| 0usize); // 0..4
+    let init_options_col = std::env::var("DLSS_TEST_BP_COL").ok().and_then(|v| v.parse().ok()).unwrap_or(0usize);
+    let mut options_col = use_signal(move || init_options_col); // 0 = Left Column (Profiles), 1 = Right Column (Feature Tuning)
+    let init_sub_idx = std::env::var("DLSS_TEST_BP_SUB").ok().and_then(|v| v.parse().ok()).unwrap_or(0usize);
+    let mut options_sub_idx = use_signal(move || init_sub_idx); // In Column 1: 0 = Card/Checkbox, 1 = Stepper
+    let init_profile_idx = std::env::var("DLSS_TEST_BP_PROFILE").ok().and_then(|v| v.parse().ok()).unwrap_or(0usize);
+    let mut options_profile_idx = use_signal(move || init_profile_idx); // 0..4
     let mut options_tuning_idx = use_signal(|| 0usize); // 0..2
     let mut active_controller = use_signal(detect_controller_kind);
-    let is_launching = use_signal(|| false);
+    let show_entry_splash = std::env::var("DLSS_TEST_BP_LAUNCH").is_ok()
+        || std::env::var("DLSS_TEST_BP_NO_ENTRY_SPLASH").is_err();
+    let mut is_launching = use_signal(move || show_entry_splash);
     let is_applying = use_signal(|| false);
     let just_applied = use_signal(|| false);
-    let launch_overlay = use_signal(|| None::<LaunchOverlayInfo>);
-    let status_banner = use_signal(|| None::<String>);
+    let lang_on_mount = props.lang.read().clone();
+    let init_launch_overlay = if std::env::var("DLSS_TEST_BP_LAUNCH").is_ok() {
+        Some(LaunchOverlayInfo {
+            title: "Launching Cyberpunk 2077...".to_string(),
+            poster_url: None,
+            is_exiting: false,
+        })
+    } else if std::env::var("DLSS_TEST_BP_NO_ENTRY_SPLASH").is_err() {
+        resolve_launch_overlay_state(
+            LaunchLifecycleStage::EnteringBigPicture,
+            "",
+            None,
+            &lang_on_mount,
+        )
+    } else {
+        None
+    };
+    let mut launch_overlay = use_signal(move || init_launch_overlay);
+
+    use_hook(move || {
+        if std::env::var("DLSS_TEST_BP_LAUNCH").is_err() && std::env::var("DLSS_TEST_BP_NO_ENTRY_SPLASH").is_err() {
+            dioxus::prelude::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                let should_dismiss = {
+                    let guard = launch_overlay.read();
+                    if let Some(ref current) = *guard {
+                        !current.is_exiting && current.poster_url.is_none()
+                    } else {
+                        false
+                    }
+                };
+                if should_dismiss {
+                    launch_overlay.set(None);
+                    is_launching.set(false);
+                }
+            });
+        }
+    });
+    let init_banner = std::env::var("DLSS_TEST_BP_BANNER").ok();
+    let status_banner = use_signal(move || init_banner);
     let mut cursor_hidden = use_signal(|| true);
     let mut cursor_timer_gen = use_signal(|| 0usize);
     let is_open = props.is_open;
@@ -1106,7 +1219,7 @@ pub fn BigPictureOverlay(props: BigPictureProps) -> Element {
                     GamepadNavAction::PrimaryAction => {
                         if *show_exit_confirm.read() {
                             if *exit_confirm_idx.read() == 0 {
-                                exit_big_picture(desktop.clone(), is_open, show_exit_confirm);
+                                exit_big_picture(desktop.clone(), is_open, show_exit_confirm, Some(is_launching), Some(launch_overlay), props.lang.read().clone());
                             } else {
                                 show_exit_confirm.set(false);
                             }
@@ -1291,7 +1404,7 @@ pub fn BigPictureOverlay(props: BigPictureProps) -> Element {
                         "ui",
                         "Virtual streaming display detached during active session; cleanly exiting Big Picture mode to prevent host desktop lock",
                     );
-                    exit_big_picture(desktop.clone(), is_open, show_exit_confirm);
+                    exit_big_picture(desktop.clone(), is_open, show_exit_confirm, Some(is_launching), Some(launch_overlay), props.lang.read().clone());
                     break;
                 }
                 had_virtual = cur_virtual;
@@ -1336,7 +1449,7 @@ pub fn BigPictureOverlay(props: BigPictureProps) -> Element {
                 }
                 Key::Enter => {
                     if *exit_confirm_idx.read() == 0 {
-                        exit_big_picture(desktop_keydown.clone(), is_open, show_exit_confirm);
+                        exit_big_picture(desktop_keydown.clone(), is_open, show_exit_confirm, Some(is_launching), Some(launch_overlay), props.lang.read().clone());
                     } else {
                         show_exit_confirm.set(false);
                     }
@@ -1346,7 +1459,7 @@ pub fn BigPictureOverlay(props: BigPictureProps) -> Element {
                 }
                 Key::Character(ref s) if s == " " => {
                     if *exit_confirm_idx.read() == 0 {
-                        exit_big_picture(desktop_keydown.clone(), is_open, show_exit_confirm);
+                        exit_big_picture(desktop_keydown.clone(), is_open, show_exit_confirm, Some(is_launching), Some(launch_overlay), props.lang.read().clone());
                     } else {
                         show_exit_confirm.set(false);
                     }
@@ -2363,7 +2476,7 @@ pub fn BigPictureOverlay(props: BigPictureProps) -> Element {
                                     } else if !active_advisories.is_empty() {
                                         for adv in &active_advisories {
                                             {
-                                                let is_info = adv.severity == crate::core::install_routes::AdvisorySeverity::Info;
+                                                let is_info = adv.severity == crate::core::advisories::AdvisorySeverity::Info;
                                                 let card_class = if is_info { "emu-note info-notice" } else { "emu-note incompatibility-warning" };
                                                 let title_text = if is_info {
                                                     crate::core::i18n::t_param(&props.lang.read(), "advisory_notice_info", &adv.title)
@@ -2888,16 +3001,15 @@ pub fn BigPictureOverlay(props: BigPictureProps) -> Element {
                     div {
                         class: "bp-confirm-modal",
                         onclick: move |e| e.stop_propagation(),
-                        h2 { class: "bp-confirm-title", "{crate::core::i18n::t(&props.lang.read(), \"bp_exit_title\")}" }
-                        p { class: "bp-confirm-desc", "{crate::core::i18n::t(&props.lang.read(), \"bp_exit_desc\")}" }
                         div {
                             class: "bp-confirm-actions",
                             button {
                                 class: format!("bp-confirm-btn danger {}", if *exit_confirm_idx.read() == 0 { "bp-cursor-focused" } else { "" }),
                                 onclick: {
                                     let d = desktop.clone();
+                                    let lang_val = props.lang.read().clone();
                                     move |_| {
-                                        exit_big_picture(d.clone(), is_open, show_exit_confirm);
+                                        exit_big_picture(d.clone(), is_open, show_exit_confirm, Some(is_launching), Some(launch_overlay), lang_val.clone());
                                     }
                                 },
                                 span { "{crate::core::i18n::t(&props.lang.read(), \"bp_exit_btn_desktop\")}" }
@@ -3073,18 +3185,7 @@ async fn deploy_or_restore_payload(
         let r_choice = route_choice.to_string();
 
         let deploy_res = tokio::task::spawn_blocking(move || {
-            let payloads = PayloadBundle::from_system().ok();
-            if b_choice == "optiscaler" {
-                deploy_optiscaler(&deploy_opts)
-            } else if r_choice == "native" {
-                deploy_native_dlss5(&deploy_opts)
-            } else {
-                if let Some(p) = payloads {
-                    deploy_feeder_with_bundle(&deploy_opts, &p)
-                } else {
-                    deploy_native_dlss5(&deploy_opts)
-                }
-            }
+            RouteFactory::dispatch_deploy_from_system(&b_choice, &r_choice, &deploy_opts)
         }).await;
 
         match deploy_res {
@@ -3192,7 +3293,7 @@ fn trigger_launch(
     backend_choice: String,
     route_choice: String,
     is_vanilla: bool,
-    desktop: dioxus::desktop::DesktopContext,
+    desktop: OptionalDesktopContext,
     mut is_launching: Signal<bool>,
     mut launch_overlay: Signal<Option<LaunchOverlayInfo>>,
     mut status_banner: Signal<Option<String>>,

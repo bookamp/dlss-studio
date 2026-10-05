@@ -1,23 +1,23 @@
-pub mod pe;
-pub mod gpu;
-pub mod scan;
-pub mod journal;
-pub mod optiscaler;
-pub mod mfg_unlock;
-pub mod state;
-pub mod install_guards;
+pub mod addons;
+pub mod advisories;
 pub mod compatibility;
-pub mod steamart;
-pub mod install_routes;
-
-pub mod i18n;
-pub mod tray;
-pub mod logger;
-pub mod single_instance;
 pub mod downloader;
-pub mod vulkan_layer;
+pub mod i18n;
+pub mod journal;
+pub mod payloads;
+pub mod platform;
+pub mod routes;
+pub mod scan;
+pub mod state;
+pub mod steamart;
+pub mod utils;
 pub mod vibepollo;
-pub mod display;
- 
+
+// Top-level aliases for seamless module access
+pub use platform::{display, gpu, tray};
+pub use platform::process as install_guards;
+pub use platform::vulkan as vulkan_layer;
+pub use utils::{ini, logger, pe, single_instance};
+
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 

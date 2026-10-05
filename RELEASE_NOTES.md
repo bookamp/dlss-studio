@@ -1,10 +1,48 @@
-# DLSS 5 Studio v2.0.1 ⚡
+# DLSS 5 Studio v2.0.2 ⚡
 
-> **Maintenance & Enhancement Release: Universal RTX 40 MFG core integration (Dashdogy), DirectX 11 D3D11on12 OptiScaler bridge & Streamline 2.14.1 stack, cumulative history rollback hardening, Vulkan test sandboxing, dynamic route advisories, and scanner accuracy refinements.**
+> **Sunshine / Apollo streaming session lifecycle synchronization, smooth Big Picture enter/exit transitions, refined exit dialog, and core domain modularization.**
 
 ---
 
-### 🚀 Highlights & Improvements
+### 🎮 Big Picture & Streaming Changes
+
+- **Sunshine / Apollo Stream Lifecycle Management**:
+  - Registered DLSS Studio in `apps.json` with canonical Sunshine options (`auto-detach: false`, `wait-all: false`, `exit-timeout: 5`).
+  - Resolves an issue where exiting Big Picture left the Moonlight stream hanging on a frozen screen. Sunshine now detects process exit immediately, terminates the stream, destroys the virtual display, and returns Moonlight to the client menu.
+- **Dual-Event Streaming Process Bridge**:
+  - Spawning a secondary instance via `--big-picture` signals the running desktop window to switch to Big Picture mode and holds the stream session until exit without single-instance mutex collisions.
+  - Monitors both the stream exit event and desktop process lifecycle with zero CPU polling via Win32 `WaitForMultipleObjects`.
+- **Smooth Enter & Exit Transitions**:
+  - Added dedicated blackout transition screens (`bp_entering_title`, `bp_exiting_title` localized across all 14 supported languages) to conceal desktop window repositioning and virtual display switching.
+  - Cleaned and reset launch overlay signals on desktop return to prevent freezes.
+- **Refined Exit Confirmation Dialog**:
+  - Simplified the Big Picture exit modal to two distinct action buttons (*Exit Big Picture* / *Cancel*).
+
+---
+
+### 🖥️ Core Desktop & Architecture Changes
+
+- **Core Domain Modularization**:
+  - Restructured monolithic core architecture into 18 dedicated submodules (`routes/`, `advisories/`, `payloads/`, `scan/`, `steamart/`, `journal/`, `addons/`, `platform/`, `vibepollo/`, `utils/`) for clean domain separation and improved maintainability.
+- **In-Process Setup Extraction**:
+  - Replaced external process invocations during setup extraction with in-process Win32 registry and process APIs for instantaneous payload unbundling.
+
+---
+
+### 📦 Included Packages & Downloads
+
+| File | Type | Description |
+| :--- | :--- | :--- |
+| **`dlss-studio-v2.0.2-setup.exe`** | Standalone Setup / Installer (Recommended) | Native Rust setup wizard with configurable install and data storage locations, Start Menu & Desktop shortcuts, and Windows registration. |
+| **`dlss-studio-v2.0.2-portable.exe`** | Portable Executable | Standalone self-contained executable. Run anywhere with no installation required. |
+| **`dlss-mip-fix.addon64`** | D3D12 Mip Companion Add-on | Standalone pure Rust ReShade companion add-on for D3D12 mip level bias tuning and texture filtering. |
+
+---
+
+### 📜 Previous Releases
+
+<details>
+<summary><b>DLSS 5 Studio v2.0.1 — Universal RTX 40 MFG Module & DirectX 11 OptiScaler D3D11on12 Interop</b></summary>
 
 - **Universal RTX 40 Multi-Frame Generation (Dashdogy Core Module)**:
   - Integrated Dashdogy's standalone `RTXMFG.dll` as a first-class core component alongside RenoDX MFG Unlock.
@@ -28,27 +66,14 @@
 - **Multilingual Copy Refresh**:
   - Refreshed `feature_mfg_desc` and notes across all 14 supported languages to reference the Universal RTX 40 MFG module.
 
----
-
-### 📦 Included Packages & Downloads
-
-| File | Type | Description |
-| :--- | :--- | :--- |
-| **`dlss-studio-v2.0.1-setup.exe`** | Standalone Setup / Installer (Recommended) | Native Rust setup wizard with configurable install and data storage locations, in-place update detection, Start Menu & Desktop shortcuts, and Windows registration. |
-| **`dlss-studio-v2.0.1-portable.exe`** | Portable Executable | Standalone self-contained executable. Run anywhere with no installation required. |
-| **`dlss-mip-fix.addon64`** | D3D12 Mip Companion Add-on | Standalone pure Rust ReShade companion add-on for D3D12 mip level bias tuning and texture filtering. |
-| **`renodx-dlss5.addon64`** | RenoDX DLSS 5 Companion Add-on | ReShade companion add-on for DLSS 5 Neural Reconstruction and Frame Generation. |
-
----
-
-### 📜 Previous Releases
+</details>
 
 <details>
 <summary><b>DLSS 5 Studio v2.0.0 — Big Picture Mode & Pure Rust Mip Companion Add-on</b></summary>
 
 - **Big Picture Mode (10-Foot Television & Gamepad Interface)**:
-  - Authentic console experience with native XInput gamepad navigation, dynamic hero backdrop vignetting, full-screen game showcase, and quick store filtering.
-  - Interactive profile options: One-click "Apply & Play" and instant "Play", Neural Rendering Style presets, OptiScaler Pre-SR multi-pass tuning, and 4x Multi-Frame Generation toggling.
+  - Console experience with native XInput gamepad navigation, dynamic hero backdrop vignetting, full-screen game showcase, and quick store filtering.
+  - Profile options: One-click "Apply & Play" and instant "Play", Neural Rendering Style presets, OptiScaler Pre-SR multi-pass tuning, and 4x Multi-Frame Generation toggling.
   - Safe exit confirmation modal requiring explicit confirmation before returning to the desktop view.
 - **Pure Rust D3D12 Mip Companion Add-on (`dlss-mip-fix.addon64`)**:
   - Rebuilt the D3D12 Mip Companion Add-on in 100% pure Rust (`crates/addons/dlss-mip-addon/`), replacing legacy C++ binaries.
@@ -69,15 +94,15 @@
 <summary><b>DLSS 5 Studio v1.0.8 — Feeder Route MFG Detection & DirectX 11 Advisory Release</b></summary>
 
 - **Feeder Route Multi-Frame Generation Detection (Issue #7)**:
-  - Resolved a contradiction where games utilizing the DLSS 5 Feeder route showed "Unsupported (requires native DLSS-G)" in the specifications panel despite having MFG active via the Feeder path.
+  - Resolved an issue where games utilizing the DLSS 5 Feeder route showed "Unsupported (requires native DLSS-G)" in the specifications panel despite having MFG active via the Feeder path.
   - The game detail panel now specifically inspects for active Feeder route deployments rather than checking solely for native DLSS-G.
 - **DirectX 11 Route Incompatibility Advisory & Anti-Suppression**:
-  - When inspecting pure DirectX 11 games (such as *A Plague Tale: Innocence*), the UI now presents an explicit **High Incompatibility Advisory** banner explaining that Multi-Frame Generation and certain OptiScaler paths require DirectX 12 presentation pipelines and motion vectors.
-  - Added an anti-suppression architecture ensuring prior feeder manifests or proxy hooks cannot suppress compatibility warnings or falsely declare DX12-exclusive features supported.
+  - When inspecting pure DirectX 11 games (such as *A Plague Tale: Innocence*), the UI presents an explicit High Incompatibility Advisory banner explaining that Multi-Frame Generation and certain OptiScaler paths require DirectX 12 presentation pipelines.
+  - Added an anti-suppression architecture ensuring prior feeder manifests or proxy hooks cannot suppress compatibility warnings.
   - Includes a "Deploy with Force Override" button (`btn_deploy_override`) with dedicated warning styles and complete localization across all 13 supported languages.
 - **5-Manifest Backup Retention Engine (`prune_old_manifests`)**:
   - Implemented an automatic journal pruning engine retaining the top 5 most recent `manifest.json.done-*` backup records.
-  - Automatically cleans orphaned `originals/{timestamp}` backup directories no longer referenced by active or retained manifests, keeping backup storage lean and organized.
+  - Automatically cleans orphaned `originals/{timestamp}` backup directories no longer referenced by active or retained manifests.
 
 </details>
 
@@ -114,18 +139,8 @@
 
 </details>
 
-- **Automatic Artwork Resolution for Manually Added Games & Folders**: Smart title inference for nested folders and boundary splitting for fused titles.
-- **Installer Upgrade & Process Handling**: Registry check, in-place update mode, and graceful process shutdown.
-- **Runtime Component Updates**: OptiScaler DLSS-NR v0.8.4, DLSS 5 Feeder v1.16.0-beta.3, MFGAdaUnlock-RenoDx 1.0.
-- **Legacy Pre-DirectX 10 (DirectX 8 & 9) dgVoodoo 2 Interop**: Automated dgVoodoo 2 translation, 32-bit Large Address Aware (LAA) inspection and toggling.
-- **Versioned Deliverables**: Version-stamped setup and portable executables.
-
-</details>
-
 <details>
 <summary><b>DLSS 5 Studio v1.0.1 — Hotfix Release</b></summary>
-
-> Hotfix release restoring Neural Rendering on the DLSS 5 Feeder route and improving out-of-the-box installation defaults.
 
 - **DLSS 5 Feeder Neural Rendering**:
   - Restored `NeuralUplift=1` in `ReShade.ini` during Feeder route deployments.
@@ -141,3 +156,4 @@
 ---
 
 **Compatibility**: Windows 10 (1903+) or Windows 11 (64-bit) • NVIDIA GeForce RTX 20/30/40/50-Series (RTX 40-Series required for 4x Multi-Frame Generation).
+
