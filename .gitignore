@@ -3,3 +3,6 @@
 /dist
 /payload
 *.exe
+target/
+crates/**/target/
+*.profraw

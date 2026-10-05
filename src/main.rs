@@ -59,7 +59,7 @@ fn main() {
         let game_dir = std::path::PathBuf::from(&args[2]);
         let exe_path = std::path::PathBuf::from(&args[3]);
         let passes = args.get(4).and_then(|p| p.parse::<u32>().ok()).unwrap_or(1);
-        let opts = core::optiscaler::DeployOptions {
+        let opts = core::routes::DeployOptions {
             game_name: Some("Target Game".to_string()),
             game_dir,
             exe_path,
@@ -71,7 +71,7 @@ fn main() {
             nr_style: 0,
             nr_style_enabled: false,
         };
-        match core::optiscaler::deploy_optiscaler(&opts) {
+        match core::routes::optiscaler::deploy_optiscaler(&opts) {
             Ok(res) => {
                 for line in res.log_lines {
                     println!("{}", line);
@@ -109,6 +109,7 @@ fn main() {
     }
 
     let start_in_bp = big_picture::launch_args_request_big_picture(&args);
+    big_picture::set_started_in_big_picture(start_in_bp);
 
     // Single instance check: only ever allow one running instance
     let _instance_guard = match core::single_instance::acquire_single_instance(start_in_bp) {
@@ -117,10 +118,17 @@ fn main() {
             core::logger::info(
                 "app",
                 &format!(
-                    "Another instance of DLSS 5 Studio is already running. Signaled existing instance (big_picture: {}) and exiting.",
+                    "Another instance of DLSS 5 Studio is already running. Signaled existing instance (big_picture: {}).",
                     start_in_bp
                 ),
             );
+            if start_in_bp {
+                core::logger::info(
+                    "app",
+                    "Secondary instance holding stream session lifecycle until Big Picture exits...",
+                );
+                core::vibepollo::wait_for_stream_session_exit(u32::MAX);
+            }
             return;
         }
     };
@@ -158,7 +166,7 @@ fn main() {
     if args.len() > 2 && args[1] == "--deploy-optiscaler" {
         let game_dir = std::path::PathBuf::from(&args[2]);
         if let Some(game) = core::scan::scan_game_directory(&game_dir) {
-            let opts = core::optiscaler::DeployOptions {
+            let opts = core::routes::DeployOptions {
                 game_name: Some(game.name.clone()),
                 game_dir: game.dir.clone(),
                 exe_path: game.exe_path.clone(),
@@ -170,7 +178,7 @@ fn main() {
                 nr_style: 0,
                 nr_style_enabled: false,
             };
-            match core::optiscaler::deploy_optiscaler(&opts) {
+            match core::routes::optiscaler::deploy_optiscaler(&opts) {
                 Ok(res) => {
                     for line in res.log_lines {
                         println!("{}", line);

@@ -1,0 +1,246 @@
+//! Manipulating and registering applications inside Vibepollo/Sunshine/Apollo `apps.json`.
+
+use std::fs;
+use std::path::Path;
+
+use super::cover::ensure_vibepollo_cover_art;
+use super::detect::get_vibepollo_apps_path;
+
+pub const DLSS_STUDIO_APP_NAME: &str = "DLSS Studio";
+pub const DLSS_STUDIO_UUID: &str = "4C640001-A480-4D56-9132-DLSS5STUDIO2";
+
+/// Checks whether DLSS Studio is currently registered in `apps.json`.
+#[allow(dead_code)]
+pub fn is_app_registered() -> bool {
+    match get_vibepollo_apps_path() {
+        Some(p) => is_app_registered_at_path(&p),
+        None => false,
+    }
+}
+
+pub fn is_app_registered_at_path(apps_path: &Path) -> bool {
+    if !apps_path.exists() {
+        return false;
+    }
+
+    let content = match fs::read_to_string(apps_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    if let Some(apps) = json.get("apps").and_then(|a| a.as_array()) {
+        apps.iter().any(|app| {
+            app.get("name").and_then(|n| n.as_str()) == Some(DLSS_STUDIO_APP_NAME)
+        })
+    } else {
+        false
+    }
+}
+
+/// Adds or updates DLSS Studio in Vibepollo's `apps.json`.
+pub fn register_app() -> Result<(), String> {
+    let apps_path = get_vibepollo_apps_path()
+        .ok_or_else(|| "Vibepollo apps.json path could not be located".to_string())?;
+    register_app_at_path(&apps_path)
+}
+
+pub fn register_app_at_path(apps_path: &Path) -> Result<(), String> {
+    let curr_exe = std::env::current_exe()
+        .map_err(|e| format!("Could not resolve current executable path: {}", e))?;
+    let working_dir = curr_exe
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let exe_str = curr_exe.to_string_lossy().to_string();
+
+    let cover_art = ensure_vibepollo_cover_art()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let mut json = if apps_path.exists() {
+        let content = fs::read_to_string(apps_path)
+            .map_err(|e| format!("Failed to read {}: {}", apps_path.display(), e))?;
+        serde_json::from_str::<serde_json::Value>(&content)
+            .map_err(|e| format!("Failed to parse apps.json: {}", e))?
+    } else {
+        serde_json::json!({
+            "apps": [],
+            "env": {},
+            "version": 2
+        })
+    };
+
+    let apps_array = json
+        .get_mut("apps")
+        .and_then(|a| a.as_array_mut())
+        .ok_or_else(|| "Invalid apps.json structure: missing 'apps' array".to_string())?;
+
+    let dlss_app_entry = serde_json::json!({
+        "name": DLSS_STUDIO_APP_NAME,
+        "cmd": format!("\"{}\" --big-picture", exe_str),
+        "working-dir": working_dir,
+        "image-path": cover_art,
+        "uuid": DLSS_STUDIO_UUID,
+        "auto-detach": false,
+        "wait-all": false,
+        "exit-timeout": 5,
+        "allow-client-commands": true,
+        "elevated": false
+    });
+
+    if let Some(pos) = apps_array.iter().position(|a| {
+        a.get("name").and_then(|n| n.as_str()) == Some(DLSS_STUDIO_APP_NAME)
+            || a.get("uuid").and_then(|u| u.as_str()) == Some("4C640001-A480-4D56-9132-DLSS5STUDIO1")
+            || a.get("uuid").and_then(|u| u.as_str()) == Some(DLSS_STUDIO_UUID)
+    }) {
+        apps_array[pos] = dlss_app_entry;
+    } else {
+        apps_array.push(dlss_app_entry);
+    }
+
+    let formatted_json = serde_json::to_string_pretty(&json)
+        .map_err(|e| format!("Failed to format JSON: {}", e))?;
+
+    write_apps_json(apps_path, &formatted_json)
+}
+
+/// Removes DLSS Studio from Vibepollo's `apps.json`.
+pub fn unregister_app() -> Result<(), String> {
+    let apps_path = match get_vibepollo_apps_path() {
+        Some(p) => p,
+        None => return Ok(()), // Nothing to unregister
+    };
+    unregister_app_at_path(&apps_path)
+}
+
+pub fn unregister_app_at_path(apps_path: &Path) -> Result<(), String> {
+    if !apps_path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(apps_path)
+        .map_err(|e| format!("Failed to read {}: {}", apps_path.display(), e))?;
+
+    let mut json: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse apps.json: {}", e))?;
+
+    if let Some(apps_array) = json.get_mut("apps").and_then(|a| a.as_array_mut()) {
+        let initial_len = apps_array.len();
+        apps_array.retain(|a| {
+            a.get("name").and_then(|n| n.as_str()) != Some(DLSS_STUDIO_APP_NAME)
+                && a.get("uuid").and_then(|u| u.as_str()) != Some("4C640001-A480-4D56-9132-DLSS5STUDIO1")
+                && a.get("uuid").and_then(|u| u.as_str()) != Some(DLSS_STUDIO_UUID)
+        });
+
+        if apps_array.len() == initial_len {
+            return Ok(()); // Already not present
+        }
+    }
+
+    let formatted_json = serde_json::to_string_pretty(&json)
+        .map_err(|e| format!("Failed to format JSON: {}", e))?;
+
+    write_apps_json(apps_path, &formatted_json)
+}
+
+/// Writes updated content to `apps.json`, attempting direct write first and
+/// falling back to Windows UAC elevation (`runas`) if permission is denied.
+pub fn write_apps_json(target_path: &Path, content: &str) -> Result<(), String> {
+    // 1. Direct write attempt
+    if let Some(parent) = target_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    match fs::write(target_path, content) {
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() != std::io::ErrorKind::PermissionDenied => {
+            return Err(format!("Failed to write to {}: {}", target_path.display(), e));
+        }
+        Err(_) => {
+            // Permission denied: proceed to elevated write
+        }
+    }
+
+    // 2. Elevated UAC write via temporary file
+    let temp_dir = std::env::temp_dir();
+    let temp_file = temp_dir.join(format!("vibepollo_apps_{}.json", std::process::id()));
+
+    fs::write(&temp_file, content)
+        .map_err(|e| format!("Failed to write temporary elevated staging file: {}", e))?;
+
+    // Avoid blocking headless/automated test execution with real interactive Windows UAC prompts
+    if cfg!(test)
+        || std::env::var("DLSS_TEST").is_ok()
+        || std::env::current_exe().map(|p| {
+            let s = p.to_string_lossy().to_lowercase();
+            s.contains("\\deps\\") || s.contains("test")
+        }).unwrap_or(false)
+    {
+        let _ = fs::remove_file(&temp_file);
+        return Err("Administrator permissions were cancelled or denied (test environment).".to_string());
+    }
+
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+        use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+        use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+        use windows::core::PCWSTR;
+
+        let verb: Vec<u16> = "runas\0".encode_utf16().collect();
+        let file: Vec<u16> = "cmd.exe\0".encode_utf16().collect();
+        let params_str = format!(
+            "/c copy /y \"{}\" \"{}\"\0",
+            temp_file.display(),
+            target_path.display()
+        );
+        let params: Vec<u16> = params_str.encode_utf16().collect();
+
+        let mut exec_info = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS,
+            hwnd: windows::Win32::Foundation::HWND::default(),
+            lpVerb: PCWSTR::from_raw(verb.as_ptr()),
+            lpFile: PCWSTR::from_raw(file.as_ptr()),
+            lpParameters: PCWSTR::from_raw(params.as_ptr()),
+            lpDirectory: PCWSTR::null(),
+            nShow: SW_HIDE.0 as i32,
+            ..Default::default()
+        };
+
+        let res = unsafe { ShellExecuteExW(&mut exec_info) };
+
+        if res.is_err() || exec_info.hProcess.is_invalid() {
+            let _ = fs::remove_file(&temp_file);
+            return Err("Administrator permissions were cancelled or denied.".to_string());
+        }
+
+        // Wait up to 10 seconds for the elevated copy command to finish
+        let wait_res = unsafe { WaitForSingleObject(exec_info.hProcess, 10_000) };
+        let mut exit_code: u32 = 1;
+        unsafe {
+            let _ = GetExitCodeProcess(exec_info.hProcess, &mut exit_code);
+            let _ = CloseHandle(exec_info.hProcess);
+        }
+
+        let _ = fs::remove_file(&temp_file);
+
+        if wait_res.0 != 0 || exit_code != 0 {
+            return Err(format!("Elevated write failed with exit code {}", exit_code));
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = fs::remove_file(&temp_file);
+        Err("Vibepollo UAC elevation is only supported on Windows".to_string())
+    }
+}

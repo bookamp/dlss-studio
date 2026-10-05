@@ -7,162 +7,13 @@ use base64::Engine;
 use crate::core::scan::{scan_game_directory, scan_library_root, discover_all_launchers, discover_drive_roots, dedupe_games, GameEntry};
 use crate::core::gpu::{detect_gpus, GpuInfo};
 
-const BRAND_BADGE_WEBP: &[u8] = include_bytes!("../../assets/brand-badge.webp");
-
-
+pub use crate::ui::helpers::*;
 use crate::core::journal::{restore_game, read_history, append_history, HistoryRow};
 use crate::core::install_guards::assert_game_closed;
 use crate::core::compatibility::managed_mod_root;
 use crate::core::state::{load_state, save_state, touch, ago_localized, get_state_path, log_message, get_session_log, RecentEntry};
 use std::fs;
 
-
-fn copy_to_clipboard(text: &str) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let child = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", "$input | Set-Clipboard"])
-            .stdin(std::process::Stdio::piped())
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW
-            .spawn();
-        if let Ok(mut c) = child {
-            if let Some(mut stdin) = c.stdin.take() {
-                use std::io::Write;
-                let _ = stdin.write_all(text.as_bytes());
-            }
-            let _ = c.wait();
-        }
-    }
-}
-
-#[derive(Clone, PartialEq, Debug)]
-pub enum AppStatus {
-    Ready,
-    DownloadingComponents,
-    DownloadFailed(String),
-    ScanningLibrary,
-    ScanningFolder(String),
-    ScanningLaunchers,
-    FoundGames(usize),
-    NoGamesFound(String),
-    AddedGame(String),
-}
-
-#[doc(hidden)]
-pub fn format_status(lang: &str, status: &AppStatus) -> String {
-    match status {
-        AppStatus::Ready => crate::core::i18n::t(lang, "status_ready").to_string(),
-        AppStatus::DownloadingComponents => crate::core::i18n::t(lang, "status_downloading_components").to_string(),
-        AppStatus::DownloadFailed(_) => crate::core::i18n::t(lang, "status_download_failed").to_string(),
-        AppStatus::ScanningLibrary => crate::core::i18n::t(lang, "status_scanning_library").to_string(),
-        AppStatus::ScanningFolder(folder) => format!("{} {}...", crate::core::i18n::t(lang, "status_scanning_folder"), folder),
-        AppStatus::ScanningLaunchers => crate::core::i18n::t(lang, "status_scanning_launchers").to_string(),
-        AppStatus::FoundGames(count) => crate::core::i18n::t_param(lang, "status_found_games", &count.to_string()),
-        AppStatus::NoGamesFound(folder) => crate::core::i18n::t_param(lang, "status_no_game_found", folder),
-        AppStatus::AddedGame(name) => crate::core::i18n::t_param(lang, "status_added_game", name),
-    }
-}
-
-#[doc(hidden)]
-pub fn clean_display_title(raw: &str) -> String {
-    if raw.contains('_') && (raw.contains('.') || raw.contains("__")) {
-        let base = raw.split('_').next().unwrap_or(raw);
-        let name_part = base.split('.').last().unwrap_or(base);
-        if !name_part.is_empty() {
-            let mut spaced = String::new();
-            let mut prev_is_lower = false;
-            for ch in name_part.chars() {
-                if ch.is_uppercase() && prev_is_lower {
-                    spaced.push(' ');
-                }
-                prev_is_lower = ch.is_lowercase();
-                spaced.push(ch);
-            }
-            return spaced;
-        }
-    }
-    raw.replace('_', " ").replace('-', " ")
-}
-
-#[doc(hidden)]
-pub fn resolve_game_title(row: &HistoryRow, games: &[GameEntry]) -> String {
-    if let Some(ref name) = row.game_name {
-        if !name.trim().is_empty() {
-            return name.clone();
-        }
-    }
-    let row_p = std::path::Path::new(&row.dir);
-    for g in games {
-        let g_p = std::path::Path::new(&g.dir);
-        if row_p == g_p || row.dir.eq_ignore_ascii_case(&g.dir.to_string_lossy()) || row_p.starts_with(g_p) || g_p.starts_with(row_p) {
-            return g.name.clone();
-        }
-    }
-    let manifests = [
-        row_p.join("MicrosoftGame.config"),
-        row_p.join("Content").join("MicrosoftGame.config"),
-        row_p.join("appxmanifest.xml"),
-    ];
-    let display_name_re = regex::Regex::new(r#"(?i)DefaultDisplayName\s*=\s*"([^"]+)""#).unwrap();
-    let display_name_tag_re = regex::Regex::new(r#"(?i)<DisplayName>\s*([^<]+)\s*</DisplayName>"#).unwrap();
-    for m in &manifests {
-        if let Ok(text) = std::fs::read_to_string(m) {
-            if let Some(cap) = display_name_re.captures(&text).or_else(|| display_name_tag_re.captures(&text)) {
-                let n = cap[1].trim();
-                if !n.is_empty() && !n.starts_with("ms-resource:") {
-                    return n.to_string();
-                }
-            }
-        }
-    }
-    if let Some(fname) = row_p.file_name().and_then(|f| f.to_str()) {
-        if fname.eq_ignore_ascii_case("content") || fname.eq_ignore_ascii_case("win64") || fname.eq_ignore_ascii_case("binaries") {
-            if let Some(parent) = row_p.parent().and_then(|p| p.file_name()).and_then(|f| f.to_str()) {
-                if parent.eq_ignore_ascii_case("binaries") {
-                    if let Some(gp) = row_p.parent().and_then(|p| p.parent()).and_then(|p| p.file_name()).and_then(|f| f.to_str()) {
-                        return clean_display_title(gp);
-                    }
-                }
-                return clean_display_title(parent);
-            }
-        }
-        return clean_display_title(fname);
-    }
-    row.dir.clone()
-}
-
-#[doc(hidden)]
-pub fn resolve_module_meta(rel: &str) -> (&'static str, &'static str, &'static str, &'static str) {
-    let lower = rel.to_ascii_lowercase();
-    let file_name = std::path::Path::new(rel)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(rel)
-        .to_ascii_lowercase();
-
-    if file_name == "nvngx_dlss.dll" {
-        ("module_dlss_sr", "NVIDIA", "vendor-nvidia", "DLSS")
-    } else if file_name == "nvngx_dlssg.dll" {
-        ("module_dlss_fg", "NVIDIA", "vendor-nvidia", "DLSS-G")
-    } else if file_name == "nvngx_dlssd.dll" {
-        ("module_dlss_rr", "NVIDIA", "vendor-nvidia", "DLSS-RR")
-    } else if file_name.starts_with("amd_fidelityfx_framegeneration") || file_name.starts_with("amd_fidelityfx_dx12") {
-        ("module_fsr_fg", "AMD", "vendor-amd", "FSR FG")
-    } else if file_name == "sl.dlss.dll" {
-        ("module_sl_dlss", "Streamline", "vendor-sl", "SL DLSS")
-    } else if file_name == "sl.dlss_g.dll" {
-        ("module_sl_fg", "Streamline", "vendor-sl", "SL FG")
-    } else if file_name == "sl.common.dll" || file_name == "sl.interposer.dll" {
-        ("module_sl_core", "Streamline", "vendor-sl", "SL Core")
-    } else if file_name == "sl.reflex.dll" {
-        ("module_sl_reflex", "Streamline", "vendor-sl", "Reflex")
-    } else if file_name == "dxgi.dll" && (lower.contains("optiscaler") || lower.contains("nvngx")) {
-        ("module_optiscaler", "OptiScaler", "vendor-opti", "OptiScaler")
-    } else {
-        ("module_generic_dll", "Runtime", "vendor-generic", "DLL")
-    }
-}
 
 enum IngestResult {
     SingleGame(GameEntry, std::path::PathBuf),
@@ -420,22 +271,23 @@ pub fn App() -> Element {
     let mut rust_theme = use_signal(move || init_rust_theme);
     let mut run_in_bg = use_signal(move || init_run_in_bg);
     let mut launch_at_startup = use_signal(|| crate::core::tray::is_startup_enabled());
-    let mut lang_menu_open = use_signal(|| false);
+    let init_lang_menu = std::env::var("DLSS_TEST_LANG_MENU").is_ok();
+    let mut lang_menu_open = use_signal(move || init_lang_menu);
     let start_in_bp = std::env::args().any(|a| a == "--big-picture" || a == "--tv" || a == "-bp");
     let mut big_picture_open = use_signal(move || start_in_bp);
 
     // Status bar state
     let mut status_text = use_signal(|| "Ready".to_string());
-    let mut is_downloading_components = use_signal(|| !crate::core::downloader::are_all_mandatory_components_cached());
+    let mut is_downloading_components = use_signal(|| !crate::core::addons::are_all_mandatory_components_cached());
     let mut status_state = use_signal(|| {
-        if crate::core::downloader::are_all_mandatory_components_cached() {
+        if crate::core::addons::are_all_mandatory_components_cached() {
             AppStatus::Ready
         } else {
             AppStatus::DownloadingComponents
         }
     });
     let mut status_percent = use_signal(|| {
-        if crate::core::downloader::are_all_mandatory_components_cached() {
+        if crate::core::addons::are_all_mandatory_components_cached() {
             100.0f32
         } else {
             0.0f32
@@ -475,7 +327,7 @@ pub fn App() -> Element {
 
     // Automated background component downloader
     let mut component_download_progress = use_signal(|| {
-        if crate::core::downloader::are_all_mandatory_components_cached() {
+        if crate::core::addons::are_all_mandatory_components_cached() {
             None
         } else {
             Some(crate::core::downloader::DownloadProgress::checking())
@@ -483,14 +335,16 @@ pub fn App() -> Element {
     });
     let mut trigger_component_download = use_signal(|| 0usize);
 
+
+
     use_future(move || {
         let _ = *trigger_component_download.read();
         async move {
-            if !crate::core::downloader::are_all_mandatory_components_cached() {
+            if !crate::core::addons::are_all_mandatory_components_cached() {
                 is_downloading_components.set(true);
                 status_state.set(AppStatus::DownloadingComponents);
                 status_percent.set(0.0);
-                let res = crate::core::downloader::ensure_all_mandatory_components_with_progress(|prog| {
+                let res = crate::core::addons::ensure_all_mandatory_components_with_progress(|prog| {
                     status_percent.set(prog.percentage);
                     if prog.is_downloading {
                         if *status_state.read() != AppStatus::DownloadingComponents {
@@ -503,7 +357,7 @@ pub fn App() -> Element {
                 }).await;
 
                 is_downloading_components.set(false);
-                if crate::core::downloader::are_all_mandatory_components_cached() {
+                if crate::core::addons::are_all_mandatory_components_cached() {
                     status_percent.set(100.0);
                     component_download_progress.set(None);
                     status_state.set(AppStatus::Ready);
@@ -542,20 +396,32 @@ pub fn App() -> Element {
     // Sheet / Game detail modal state
     let init_sheet_open = std::env::var("DLSS_TEST_SHEET").is_ok();
     let mut sheet_open = use_signal(move || init_sheet_open);
-    let mut sheet_game_idx = use_signal(|| if std::env::var("DLSS_TEST_SHEET").is_ok() { Some(0) } else { None });
+    let init_sheet_idx = std::env::var("DLSS_TEST_SHEET_IDX").ok().and_then(|v| v.parse::<usize>().ok());
+    let mut sheet_game_idx = use_signal(move || {
+        if std::env::var("DLSS_TEST_SHEET").is_ok() {
+            init_sheet_idx.or(Some(0))
+        } else {
+            None
+        }
+    });
     let mut last_sheet_game_dir = use_signal(|| None::<std::path::PathBuf>);
-    let mut is_editing_game_name = use_signal(|| false);
-    let mut edit_game_name_val = use_signal(|| String::new());
-    let mut backend_choice = use_signal(|| "reshade".to_string());
-    let mut route_choice = use_signal(|| "native".to_string());
+    let init_editing_name = std::env::var("DLSS_TEST_EDIT_NAME").is_ok();
+    let mut is_editing_game_name = use_signal(move || init_editing_name);
+    let mut edit_game_name_val = use_signal(|| "Custom Name".to_string());
+    let init_backend = std::env::var("DLSS_TEST_BACKEND").unwrap_or_else(|_| "reshade".to_string());
+    let mut backend_choice = use_signal(move || init_backend);
+    let init_route = std::env::var("DLSS_TEST_ROUTE").unwrap_or_else(|_| "native".to_string());
+    let mut route_choice = use_signal(move || init_route);
     let mut opti_pre_sr = use_signal(|| true);
     let mut opti_passes = use_signal(|| 3u32);
-    let mut mfg_choice = use_signal(|| false);
+    let init_mfg = std::env::var("DLSS_TEST_MFG").is_ok();
+    let mut mfg_choice = use_signal(move || init_mfg);
     let mut mfg_multiplier = use_signal(|| 4u32);
     let mut nr_style_choice = use_signal(|| true);
     let mut nr_style_preset = use_signal(|| 0usize);
     let mut job_lines = use_signal(|| vec!["@{status_ready}".to_string()]);
-    let mut copy_toast = use_signal(|| false);
+    let init_toast = std::env::var("DLSS_TEST_TOAST").is_ok();
+    let mut copy_toast = use_signal(move || init_toast);
     let mut copy_toast_text = use_signal(|| "Copied to clipboard".to_string());
     let mut toast_generation = use_signal(|| 0u64);
 
@@ -570,14 +436,20 @@ pub fn App() -> Element {
             });
         }
     });
-    let mut modules_expanded = use_signal(|| false);
+    let init_modules = std::env::var("DLSS_TEST_MODULES").is_ok();
+    let mut modules_expanded = use_signal(move || init_modules);
 
     // Settings state
     let mut group_games_by_store = use_signal(move || init_group);
     let mut auto_scan_drives = use_signal(move || init_auto_scan);
     let mut managed_folders = use_signal(move || init_folders);
-    let init_vibepollo_auto_add = init_state.vibepollo_auto_add;
-    let vibepollo_detected = use_signal(|| crate::core::vibepollo::is_vibepollo_installed());
+    let is_vibe_installed = crate::core::vibepollo::is_vibepollo_installed();
+    let init_vibepollo_auto_add = if is_vibe_installed {
+        crate::core::vibepollo::is_app_registered()
+    } else {
+        init_state.vibepollo_auto_add
+    };
+    let vibepollo_detected = use_signal(move || is_vibe_installed);
     let mut vibepollo_auto_add = use_signal(move || init_vibepollo_auto_add);
     let mut vibepollo_updating = use_signal(|| false);
 
@@ -585,9 +457,29 @@ pub fn App() -> Element {
     let mut activity_log = use_signal(get_session_log);
 
     // Add-on management state
-    let mut addons_active = use_signal(move || init_addons);
-    let mut custom_addons = use_signal(move || init_custom_addons);
-    let mut show_addon_dlg = use_signal(|| false);
+    let _addons_active = use_signal(move || init_addons);
+    let _custom_addons = use_signal(move || init_custom_addons);
+    let init_addon_dlg = std::env::var("DLSS_TEST_ADDON_DLG").is_ok();
+    let mut show_addon_dlg = use_signal(move || init_addon_dlg);
+    let mut addon_updates = use_signal(|| std::collections::HashMap::<crate::core::addons::AddonId, crate::core::addons::AddonVersionInfo>::new());
+    let trigger_addon_update_check = use_signal(|| 0usize);
+    let mut is_checking_addon_updates = use_signal(|| false);
+    let mut addon_update_batch_active = use_signal(|| false);
+    let mut active_updating_addon = use_signal(|| None::<crate::core::addons::AddonId>);
+
+    use_effect(move || {
+        let _ = *trigger_addon_update_check.read();
+        spawn(async move {
+            is_checking_addon_updates.set(true);
+            let list = crate::core::addons::check_all_addon_updates().await;
+            let mut map = std::collections::HashMap::new();
+            for item in list {
+                map.insert(item.id, item);
+            }
+            addon_updates.set(map);
+            is_checking_addon_updates.set(false);
+        });
+    });
     let mut dlg_path = use_signal(String::new);
     let mut dlg_file_info = use_signal(String::new);
     let mut dlg_name = use_signal(String::new);
@@ -600,7 +492,8 @@ pub fn App() -> Element {
     let mut custom_overlay_themes = use_signal(move || init_custom_overlay_themes);
     let init_hotkey_open = std::env::var("DLSS_TEST_HOTKEY").is_ok();
     let mut overlay_hotkey_open = use_signal(move || init_hotkey_open);
-    let mut overlay_create_open = use_signal(|| false);
+    let init_create_theme = std::env::var("DLSS_TEST_CREATE_THEME").is_ok();
+    let mut overlay_create_open = use_signal(move || init_create_theme);
     let init_preview_open = std::env::var("DLSS_TEST_PREVIEW").is_ok();
     let mut overlay_preview_open = use_signal(move || init_preview_open);
     let preview_theme_id = use_signal(|| "green".to_string());
@@ -767,12 +660,12 @@ pub fn App() -> Element {
                                 route_choice.set("feeder".to_string());
                             } else if g.reshade_installed {
                                 backend_choice.set("reshade".to_string());
-                                let rec = crate::core::install_routes::recommended_route(g);
+                                let rec = crate::core::routes::recommended_route(g);
                                 route_choice.set(rec.as_str().to_string());
                             }
                         } else {
                             // Unmodded / Vanilla: Automatically select the best compatible path!
-                            let rec = crate::core::install_routes::recommended_route(g);
+                            let rec = crate::core::routes::recommended_route(g);
                             backend_choice.set("reshade".to_string());
                             route_choice.set(rec.as_str().to_string());
                             mfg_choice.set(false);
@@ -831,6 +724,8 @@ pub fn App() -> Element {
     } else {
         (Vec::new(), Vec::new())
     };
+
+    let outdated_count = addon_updates.read().values().filter(|u| u.update_available).count();
 
     rsx! {
         div {
@@ -1989,9 +1884,62 @@ pub fn App() -> Element {
                         style: "cursor: default;",
                         div { class: "section-head",
                             h3 { "{crate::core::i18n::t(&current_lang.read(), \"nav_addons\")}" }
-                            button {
-                                class: "ghost sm",
-                                id: "addonAdd",
+                            div { style: "display: flex; align-items: center; gap: 8px;",
+                                if outdated_count > 0 {
+                                    button {
+                                        class: "btn-addon-batch-update",
+                                        disabled: *addon_update_batch_active.read() || *is_downloading_components.read(),
+                                        onclick: move |_| {
+                                            spawn(async move {
+                                                addon_update_batch_active.set(true);
+                                                is_downloading_components.set(true);
+                                                status_state.set(AppStatus::DownloadingComponents);
+
+                                                let mut outdated_ids = Vec::new();
+                                                for (id, u) in addon_updates.read().iter() {
+                                                    if u.update_available {
+                                                        outdated_ids.push(*id);
+                                                    }
+                                                };
+
+                                                let _ = crate::core::addons::update_all_addons(&outdated_ids, |prog| {
+                                                    status_percent.set(prog.percentage);
+                                                    if prog.is_downloading {
+                                                        component_download_progress.set(Some(prog));
+                                                    } else {
+                                                        component_download_progress.set(None);
+                                                    }
+                                                }).await;
+
+                                                addon_update_batch_active.set(false);
+                                                is_downloading_components.set(false);
+                                                component_download_progress.set(None);
+                                                status_state.set(AppStatus::Ready);
+                                                status_percent.set(100.0);
+
+                                                let list = crate::core::addons::check_all_addon_updates_force().await;
+                                                let mut map = std::collections::HashMap::new();
+                                                for item in list {
+                                                    map.insert(item.id, item);
+                                                }
+                                                addon_updates.set(map);
+
+                                                copy_toast_text.set(crate::core::i18n::t(&current_lang.read(), "toast_addons_updated").to_string());
+                                                *toast_generation.write() += 1;
+                                                copy_toast.set(true);
+                                            });
+                                        },
+                                        if *addon_update_batch_active.read() {
+                                            span { class: "spin-icon", "?" }
+                                            " {status_percent.read():.0}% ..."
+                                        } else {
+                                            "Update All ({outdated_count})"
+                                        }
+                                    }
+                                }
+                                button {
+                                    class: "ghost sm",
+                                    id: "addonAdd",
                                 onclick: move |_| {
                                     spawn(async move {
                                         if let Some(handle) = rfd::AsyncFileDialog::new()
@@ -2022,6 +1970,7 @@ pub fn App() -> Element {
                                     });
                                 },
                                 "{crate::core::i18n::t(&current_lang.read(), \"btn_add\")}"
+                                }
                             }
                         }
                         p { class: "hint", "{crate::core::i18n::t(&current_lang.read(), \"addons_hint\")}" }
@@ -2041,587 +1990,919 @@ pub fn App() -> Element {
                             }
                         }
                         div { class: "addons", id: "addonList",
-                            // 1. Mandatory Core: RenoDX v4.7
-                            div { class: if crate::core::downloader::is_renodx_engine_cached() { "addon on" } else { "addon" },
-                                div { class: "mark",
-                                    if crate::core::downloader::is_renodx_engine_cached() {
-                                        svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
-                                            path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
-                                        }
-                                    }
-                                }
-                                div { class: "body",
-                                    div { class: "t",
-                                        "RenoDX v4.7 (Full ReShade Add-on Engine)"
-                                        span { class: "tag accent", "{crate::core::i18n::t(&current_lang.read(), \"tag_mandatory_core\")}" }
-                                    }
-                                    div { class: "d", "renodx-dlss5.addon64 · {crate::core::i18n::t(&current_lang.read(), \"meta_sha256_verified\")} · 1.65 MB" }
-                                    div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} {crate::core::downloader::RENODX_DLSS5_URL}"
-                                    }
-                                    div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"addon_renodx_desc\")}"
-                                    }
-                                }
-                                div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
-                                    if crate::core::downloader::is_renodx_engine_cached() {
-                                        span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
-                                            "✓ {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
-                                        }
-                                    } else {
-                                        button {
-                                            class: "tag warn",
-                                            style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
-                                            title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
-                                            onclick: move |_| {
-                                                *trigger_component_download.write() += 1;
-                                            },
-                                            if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
-                                                "{status_percent.read():.0}% ..."
-                                            } else {
-                                                "⚡ {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            // 1. RenoDX (Full ReShade Add-on Engine)
+                            {
+                                let id = crate::core::addons::AddonId::RenoDxDlss5;
+                                let is_cached = crate::core::addons::is_renodx_engine_cached();
+                                let u_info = addon_updates.read().get(&id).cloned();
+                                let has_update = u_info.as_ref().map(|u| u.update_available && u.current_version.is_some()).unwrap_or(false);
+                                let latest_tag = u_info.as_ref().and_then(|u| u.latest_version.clone()).unwrap_or_else(|| "latest".to_string());
+                                let current_tag = u_info.as_ref().and_then(|u| u.current_version.clone()).unwrap_or_else(|| crate::core::addons::get_local_addon_version(id).unwrap_or_else(|| "latest".to_string()));
+                                let is_updating = *active_updating_addon.read() == Some(id) || (*addon_update_batch_active.read() && has_update);
 
-                            // 2. NIGos DLSS 5 D3D12 Mip Fix v2.6.1
-                            div { class: if crate::core::downloader::is_dlss5_d3d12_fix_cached() { "addon on" } else { "addon" },
-                                div { class: "mark",
-                                    if crate::core::downloader::is_dlss5_d3d12_fix_cached() {
-                                        svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
-                                            path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
-                                        }
-                                    }
-                                }
-                                div { class: "body",
-                                    div { class: "t",
-                                        "DLSS Studio D3D12 Mip Companion"
-                                        span { class: "tag accent", "v1.0.0" }
-                                    }
-                                    div { class: "d", "dlss-mip-fix.addon64 · Pure Rust Add-on · 147 KB" }
-                                    div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} {crate::core::downloader::DLSS_MIP_FIX_URL}"
-                                    }
-                                    div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"addon_dlss5_d3d12_fix_desc\")}"
-                                    }
-                                }
-                                div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
-                                    if crate::core::downloader::is_dlss5_d3d12_fix_cached() {
-                                        span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
-                                            "✓ {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
-                                        }
-                                    } else {
-                                        button {
-                                            class: "tag warn",
-                                            style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
-                                            title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
-                                            onclick: move |_| {
-                                                *trigger_component_download.write() += 1;
-                                            },
-                                            if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
-                                                "{status_percent.read():.0}% ..."
-                                            } else {
-                                                "⚡ {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 3. Mandatory Core: RenoDX 4x MFG Unlock v1.0
-                            div { class: if crate::core::downloader::is_mfg_addon_cached() { "addon on" } else { "addon" },
-                                div { class: "mark",
-                                    if crate::core::downloader::is_mfg_addon_cached() {
-                                        svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
-                                            path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
-                                        }
-                                    }
-                                }
-                                div { class: "body",
-                                    div { class: "t",
-                                        "RenoDX 4x MFG Unlock v1.0"
-                                        span { class: "tag warn", "{crate::core::i18n::t(&current_lang.read(), \"tag_rtx40\")}" }
-                                    }
-                                    div { class: "d", "renodx-mfgunlock.addon64 · v1.0 · {crate::core::i18n::t(&current_lang.read(), \"meta_sha256_verified\")} · 528 KB" }
-                                    div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} {crate::core::downloader::MFG_10_URL}"
-                                    }
-                                    div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"addon_mfg_desc\")}"
-                                    }
-                                }
-                                div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
-                                    if crate::core::downloader::is_mfg_addon_cached() {
-                                        span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
-                                            "✓ {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
-                                        }
-                                    } else {
-                                        button {
-                                            class: "tag warn",
-                                            style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
-                                            title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
-                                            onclick: move |_| {
-                                                *trigger_component_download.write() += 1;
-                                            },
-                                            if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
-                                                "{status_percent.read():.0}% ..."
-                                            } else {
-                                                "⚡ {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 3. DLSS 5 Feeder & Motion Shaders
-                            div { class: if crate::core::downloader::is_feeder_cached() { "addon on" } else { "addon" },
-                                div { class: "mark",
-                                    if crate::core::downloader::is_feeder_cached() {
-                                        svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
-                                            path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
-                                        }
-                                    }
-                                }
-                                div { class: "body",
-                                    div { class: "t",
-                                        "DLSS 5 Feeder (Neural Pipeline Interceptor)"
-                                        span { class: "tag", "{crate::core::i18n::t(&current_lang.read(), \"tag_universal_intercept\")}" }
-                                    }
-                                    div { class: "d", "dlss5-feed.addon64 + DLSS5_Feed.fx + vort_Motion.fx · {crate::core::i18n::t(&current_lang.read(), \"meta_sha256_verified\")} · 4.8 MB" }
-                                    div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} {crate::core::downloader::FEEDER_ARCHIVE_URL}"
-                                    }
-                                    div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"addon_feeder_desc\")}"
-                                    }
-                                }
-                                div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
-                                    if crate::core::downloader::is_feeder_cached() {
-                                        span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
-                                            "✓ {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
-                                        }
-                                    } else {
-                                        button {
-                                            class: "tag warn",
-                                            style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
-                                            title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
-                                            onclick: move |_| {
-                                                *trigger_component_download.write() += 1;
-                                            },
-                                            if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
-                                                "{status_percent.read():.0}% ..."
-                                            } else {
-                                                "⚡ {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 3b. Mandatory Core: Dashdogy Universal RTX40MFG-Unlock
-                            div { class: if crate::core::downloader::is_rtxmfg_cached() { "addon on" } else { "addon" },
-                                div { class: "mark",
-                                    if crate::core::downloader::is_rtxmfg_cached() {
-                                        svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
-                                            path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
-                                        }
-                                    }
-                                }
-                                div { class: "body",
-                                    div { class: "t",
-                                        "RTX40MFG-Unlock (Universal Frame Generation)"
-                                        span { class: "tag warn", "{crate::core::i18n::t(&current_lang.read(), \"tag_rtx40\")}" }
-                                    }
-                                    div { class: "d", "RTXMFG.dll · Universal MFG Bridge · Native Module · ~1.2 MB" }
-                                    div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} https://github.com/dashdogy/RTX40MFG-Unlock"
-                                    }
-                                    div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"addon_rtxmfg_desc\")}"
-                                    }
-                                }
-                                div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
-                                    if crate::core::downloader::is_rtxmfg_cached() {
-                                        span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
-                                            "✓ {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
-                                        }
-                                    } else {
-                                        button {
-                                            class: "tag warn",
-                                            style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
-                                            title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
-                                            onclick: move |_| {
-                                                *trigger_component_download.write() += 1;
-                                            },
-                                            if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
-                                                "{status_percent.read():.0}% ..."
-                                            } else {
-                                                "⚡ {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 4. Mandatory Core: OptiScaler DLSS-NR
-                            div { class: if crate::core::downloader::is_optiscaler_cached() { "addon on" } else { "addon" },
-                                div { class: "mark",
-                                    if crate::core::downloader::is_optiscaler_cached() {
-                                        svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
-                                            path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
-                                        }
-                                    }
-                                }
-                                div { class: "body",
-                                    div { class: "t",
-                                        "OptiScaler DLSS-NR (with RTX 40 MFG Integration)"
-                                        span { class: "tag", "{crate::core::i18n::t(&current_lang.read(), \"tag_neural_reconstruction\")}" }
-                                    }
-                                    div { class: "d", "OptiScaler.dll + nvngx.ini · Latest rtx40-mfg Build · {crate::core::i18n::t(&current_lang.read(), \"meta_native_backend\")} · ~18 MB" }
-                                    div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass"
-                                    }
-                                    div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"addon_optiscaler_desc\")}"
-                                    }
-                                }
-                                div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
-                                    if crate::core::downloader::is_optiscaler_cached() {
-                                        span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
-                                            "✓ {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
-                                        }
-                                    } else {
-                                        button {
-                                            class: "tag warn",
-                                            style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
-                                            title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
-                                            onclick: move |_| {
-                                                *trigger_component_download.write() += 1;
-                                            },
-                                            if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
-                                                "{status_percent.read():.0}% ..."
-                                            } else {
-                                                "⚡ {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 5. Mandatory Core: ReShade 6.8.0 Add-on Runtime
-                            div { class: if crate::core::downloader::is_reshade_cached() { "addon on" } else { "addon" },
-                                div { class: "mark",
-                                    if crate::core::downloader::is_reshade_cached() {
-                                        svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
-                                            path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
-                                        }
-                                    }
-                                }
-                                div { class: "body",
-                                    div { class: "t",
-                                        "ReShade 6.8.0 (Add-on Host Runtime)"
-                                        span { class: "tag", "{crate::core::i18n::t(&current_lang.read(), \"tag_graphics_hook\")}" }
-                                    }
-                                    div { class: "d", "ReShade64.dll · v6.8.0 · {crate::core::i18n::t(&current_lang.read(), \"meta_full_addon_support\")} · 5.3 MB" }
-                                    div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} {crate::core::downloader::RESHADE_SETUP_URL}"
-                                    }
-                                    div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"addon_reshade_desc\")}"
-                                    }
-                                }
-                                div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
-                                    if crate::core::downloader::is_reshade_cached() {
-                                        span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
-                                            "✓ {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
-                                        }
-                                    } else {
-                                        button {
-                                            class: "tag warn",
-                                            style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
-                                            title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
-                                            onclick: move |_| {
-                                                *trigger_component_download.write() += 1;
-                                            },
-                                            if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
-                                                "{status_percent.read():.0}% ..."
-                                            } else {
-                                                "⚡ {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 6. Mandatory Core: NVIDIA Streamline Runtime v2.14.1
-                            div { class: if crate::core::downloader::is_streamline_cached() { "addon on" } else { "addon" },
-                                div { class: "mark",
-                                    if crate::core::downloader::is_streamline_cached() {
-                                        svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
-                                            path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
-                                        }
-                                    }
-                                }
-                                div { class: "body",
-                                    div { class: "t",
-                                        "NVIDIA Streamline Runtime v2.14.1"
-                                        span { class: "tag", "{crate::core::i18n::t(&current_lang.read(), \"tag_interposer\")}" }
-                                    }
-                                    div { class: "d", "sl.interposer.dll · v2.14.1 · {crate::core::i18n::t(&current_lang.read(), \"meta_streamline_interposer\")} · 1.2 MB" }
-                                    div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} {crate::core::downloader::STREAMLINE_ZIP_URL}"
-                                    }
-                                    div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"addon_streamline_desc\")}"
-                                    }
-                                }
-                                div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
-                                    if crate::core::downloader::is_streamline_cached() {
-                                        span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
-                                            "✓ {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
-                                        }
-                                    } else {
-                                        button {
-                                            class: "tag warn",
-                                            style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
-                                            title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
-                                            onclick: move |_| {
-                                                *trigger_component_download.write() += 1;
-                                            },
-                                            if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
-                                                "{status_percent.read():.0}% ..."
-                                            } else {
-                                                "⚡ {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 7. dgVoodoo2 Legacy DirectX Wrapper v2.87.5
-                            div { class: if crate::core::downloader::is_dgvoodoo_cached() { "addon on" } else { "addon" },
-                                div { class: "mark",
-                                    if crate::core::downloader::is_dgvoodoo_cached() {
-                                        svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
-                                            path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
-                                        }
-                                    }
-                                }
-                                div { class: "body",
-                                    div { class: "t",
-                                        "dgVoodoo2 (Legacy DirectX Wrapper)"
-                                        span { class: "tag", "{crate::core::i18n::t(&current_lang.read(), \"tag_legacy_wrapper\")}" }
-                                    }
-                                    div { class: "d", "d3d9.dll / d3d8.dll · v2.87.5 · D3D -> D3D11 Translation · 1.4 MB" }
-                                    div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} {crate::core::downloader::DGVOODOO_URL}"
-                                    }
-                                    div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
-                                        "{crate::core::i18n::t(&current_lang.read(), \"addon_dgvoodoo_desc\")}"
-                                    }
-                                }
-                                div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
-                                    if crate::core::downloader::is_dgvoodoo_cached() {
-                                        span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
-                                            "✓ {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
-                                        }
-                                    } else {
-                                        button {
-                                            class: "tag warn",
-                                            style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
-                                            title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
-                                            onclick: move |_| {
-                                                *trigger_component_download.write() += 1;
-                                            },
-                                            if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
-                                                "{status_percent.read():.0}% ..."
-                                            } else {
-                                                "⚡ {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 8. Custom user-added add-ons
-                            for custom in custom_addons.read().clone().into_iter() {
-                                {
-                                    let path_str = custom.path.clone();
-                                    let is_act = addons_active.read().contains(&path_str);
-                                    let name_display = custom.name.clone().unwrap_or_else(|| {
-                                        std::path::Path::new(&path_str).file_name().and_then(|n| n.to_str()).unwrap_or("Custom Add-on").to_string()
-                                    });
-                                    let fname = std::path::Path::new(&path_str).file_name().and_then(|n| n.to_str()).unwrap_or("addon").to_string();
-                                    let tag_display = custom.tag.clone();
-                                    let desc_display = custom.description.clone();
-                                    rsx! {
-                                        div { key: "{path_str}", class: if is_act { "addon on" } else { "addon" },
-                                            div { class: "mark",
-                                                if is_act {
-                                                    svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
-                                                        path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
-                                                    }
+                                rsx! {
+                                    div { class: if is_cached { "addon on" } else { "addon" },
+                                        div { class: "mark",
+                                            if is_cached {
+                                                svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
+                                                    path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
                                                 }
                                             }
-                                            div { class: "body",
-                                                div { class: "t",
-                                                    "{name_display}"
-                                                    if let Some(ref t) = tag_display {
-                                                        span { class: "tag", "{t}" }
+                                        }
+                                        div { class: "body",
+                                            div { class: "t",
+                                                "RenoDX (Full ReShade Add-on Engine)"
+                                                if has_update {
+                                                    span { class: "tag update-avail", "{current_tag} \u{2192} {latest_tag}" }
+                                                } else if is_cached {
+                                                    span { class: "tag", "{current_tag}" }
+                                                } else {
+                                                    span { class: "tag", "{latest_tag}" }
+                                                }
+                                            }
+                                            div { class: "d", "renodx-dlss5.addon64 \u{00B7} {crate::core::i18n::t(&current_lang.read(), \"meta_sha256_verified\")} \u{00B7} 1.65 MB" }
+                                            div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} https://github.com/yumlevi/renodx-dlss-installer"
+                                            }
+                                            div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"addon_renodx_desc\")}"
+                                            }
+                                        }
+                                        div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
+                                            if is_updating {
+                                                span { class: "tag warn", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;",
+                                                    span { class: "spin-icon", "?" }
+                                                    "{status_percent.read():.0}%"
+                                                }
+                                            } else if has_update {
+                                                button {
+                                                    class: "btn-addon-update",
+                                                    onclick: move |_| {
+                                                        let lt = latest_tag.clone();
+                                                        spawn(async move {
+                                                            active_updating_addon.set(Some(id));
+                                                            is_downloading_components.set(true);
+                                                            status_state.set(AppStatus::DownloadingComponents);
+                                                            let _ = crate::core::addons::update_single_addon(id, |prog| {
+                                                                status_percent.set(prog.percentage);
+                                                                if prog.is_downloading {
+                                                                    component_download_progress.set(Some(prog));
+                                                                } else {
+                                                                    component_download_progress.set(None);
+                                                                }
+                                                            }).await;
+                                                            active_updating_addon.set(None);
+                                                            is_downloading_components.set(false);
+                                                            component_download_progress.set(None);
+                                                            status_state.set(AppStatus::Ready);
+                                                            status_percent.set(100.0);
+
+                                                            let list = crate::core::addons::check_all_addon_updates_force().await;
+                                                            let mut map = std::collections::HashMap::new();
+                                                            for item in list { map.insert(item.id, item); }
+                                                            addon_updates.set(map);
+                                                            copy_toast_text.set(crate::core::i18n::t_params(&current_lang.read(), "toast_addon_updated", &[id.name(), &lt]));
+                                                            *toast_generation.write() += 1;
+                                                            copy_toast.set(true);
+                                                        });
+                                                    },
+                                                    "Update to {latest_tag}"
+                                                }
+                                            } else if is_cached {
+                                                span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
+                                                    "\u{2713} {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
+                                                }
+                                            } else {
+                                                button {
+                                                    class: "tag warn",
+                                                    style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
+                                                    title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
+                                                    onclick: move |_| {
+                                                        *trigger_component_download.write() += 1;
+                                                    },
+                                                    if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
+                                                        "{status_percent.read():.0}% ..."
                                                     } else {
-                                                        span { class: "tag", "{crate::core::i18n::t(&current_lang.read(), \"tag_custom\")}" }
+                                                        "? {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
                                                     }
-                                                }
-                                                div { class: "d", "{fname} · {path_str}" }
-                                                if let Some(ref d) = desc_display {
-                                                    div { class: "dim", style: "font-size:0.82em; margin-top:4px;", "{d}" }
-                                                }
-                                            }
-                                            button {
-                                                class: "toggle",
-                                                role: "switch",
-                                                aria_checked: if is_act { "true" } else { "false" },
-                                                title: if is_act { crate::core::i18n::t(&current_lang.read(), "tooltip_deactivate_addon") } else { crate::core::i18n::t(&current_lang.read(), "tooltip_activate_addon") },
-                                                onclick: {
-                                                    let p = path_str.clone();
-                                                    move |_| {
-                                                        let mut cur = addons_active.read().clone();
-                                                        let was_on = cur.contains(&p);
-                                                        if was_on {
-                                                            cur.retain(|x| x != &p);
-                                                        } else {
-                                                            cur.push(p.clone());
-                                                        }
-                                                        addons_active.set(cur.clone());
-                                                        let mut s = crate::core::state::load_state();
-                                                        s.addons = cur;
-                                                        let _ = crate::core::state::save_state(&s);
-                                                        log_message(&format!("@{{log_addon_status|{}|@{}}}", p, if was_on { "log_addon_deactivated" } else { "log_addon_activated" }));
-                                                        activity_log.set(get_session_log());
-                                                    }
-                                                },
-                                                span { class: "knob" }
-                                            }
-                                            button {
-                                                class: "drop",
-                                                title: "{crate::core::i18n::t(&current_lang.read(), \"tooltip_remove_addon\")}",
-                                                onclick: {
-                                                    let p = path_str.clone();
-                                                    move |_| {
-                                                        let mut list = custom_addons.read().clone();
-                                                        list.retain(|x| x.path != p);
-                                                        custom_addons.set(list.clone());
-                                                        let mut cur_act = addons_active.read().clone();
-                                                        cur_act.retain(|x| x != &p);
-                                                        addons_active.set(cur_act.clone());
-                                                        let mut s = crate::core::state::load_state();
-                                                        s.addon_files = list;
-                                                        s.addons = cur_act;
-                                                        let _ = crate::core::state::save_state(&s);
-                                                        copy_toast_text.set(crate::core::i18n::t(&current_lang.read(), "toast_addon_removed").to_string());
-                                                        *toast_generation.write() += 1;
-                                                        copy_toast.set(true);
-                                                    }
-                                                },
-                                                svg { style: "width:15px; height:15px; fill:currentColor;", view_box: "0 0 24 24",
-                                                    path { d: "M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" }
                                                 }
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
 
-                        // Add-on Dialog Modal
-                        if *show_addon_dlg.read() {
-                            div {
-                                class: "overlay",
-                                id: "dlgOverlay",
-                                onmousedown: move |e| e.stop_propagation(),
-                                onclick: move |_| show_addon_dlg.set(false),
-                                div {
-                                    class: "dialog",
-                                    onmousedown: move |e| e.stop_propagation(),
-                                    onclick: move |e| e.stop_propagation(),
-                                    h3 { "{crate::core::i18n::t(&current_lang.read(), \"dlg_add_addon_title\")}" }
-                                    div { class: "dlg-file", id: "dlgFile", "{dlg_file_info.read()}" }
-                                    label { class: "dlg-label", "{crate::core::i18n::t(&current_lang.read(), \"dlg_field_name\")}" }
-                                    input {
-                                        class: "dlg-input",
-                                        id: "dlgName",
-                                        r#type: "text",
-                                        value: "{dlg_name.read()}",
-                                        oninput: move |e| dlg_name.set(e.value())
-                                    }
-                                    label { class: "dlg-label", "{crate::core::i18n::t(&current_lang.read(), \"dlg_field_desc\")}" }
-                                    textarea {
-                                        class: "dlg-input",
-                                        id: "dlgDesc",
-                                        rows: "3",
-                                        value: "{dlg_desc.read()}",
-                                        oninput: move |e| dlg_desc.set(e.value())
-                                    }
-                                    div { class: "dlg-hint", "{crate::core::i18n::t(&current_lang.read(), \"dlg_hint_notes\")}" }
-                                    label { class: "dlg-label", "{crate::core::i18n::t(&current_lang.read(), \"dlg_field_tag\")}" }
-                                    input {
-                                        class: "dlg-input",
-                                        id: "dlgTag",
-                                        r#type: "text",
-                                        placeholder: "{crate::core::i18n::t(&current_lang.read(), \"dlg_placeholder_tag\")}",
-                                        value: "{dlg_tag.read()}",
-                                        oninput: move |e| dlg_tag.set(e.value())
-                                    }
-                                    div { class: "dlg-actions",
-                                        button {
-                                            class: "ghost sm",
-                                            id: "dlgCancel",
-                                            onclick: move |_| show_addon_dlg.set(false),
-                                            "{crate::core::i18n::t(&current_lang.read(), \"btn_cancel\")}"
-                                        }
-                                        button {
-                                            class: "primary sm",
-                                            id: "dlgSave",
-                                            onclick: move |_| {
-                                                let p_val = dlg_path.read().clone();
-                                                let n_val = dlg_name.read().trim().to_string();
-                                                let d_val = dlg_desc.read().trim().to_string();
-                                                let t_val = dlg_tag.read().trim().to_string();
+                            // 2. DLSS Studio D3D12 Mip Companion
+                            {
+                                let id = crate::core::addons::AddonId::DlssMipFix;
+                                let is_cached = crate::core::addons::is_dlss5_d3d12_fix_cached();
+                                let u_info = addon_updates.read().get(&id).cloned();
+                                let has_update = u_info.as_ref().map(|u| u.update_available && u.current_version.is_some()).unwrap_or(false);
+                                let latest_tag = u_info.as_ref().and_then(|u| u.latest_version.clone()).unwrap_or_else(|| "v2.0.1".to_string());
+                                let current_tag = u_info.as_ref().and_then(|u| u.current_version.clone()).unwrap_or_else(|| crate::core::addons::get_local_addon_version(id).unwrap_or_else(|| "v2.0.1".to_string()));
+                                let is_updating = *active_updating_addon.read() == Some(id) || (*addon_update_batch_active.read() && has_update);
 
-                                                let entry = crate::core::state::AddonFileEntry {
-                                                    path: p_val.clone(),
-                                                    name: if n_val.is_empty() { None } else { Some(n_val) },
-                                                    description: if d_val.is_empty() { None } else { Some(d_val) },
-                                                    tag: if t_val.is_empty() { None } else { Some(t_val) },
-                                                };
-
-                                                let mut list = custom_addons.read().clone();
-                                                list.retain(|x| x.path != p_val);
-                                                list.push(entry);
-                                                custom_addons.set(list.clone());
-
-                                                let mut cur_act = addons_active.read().clone();
-                                                if !cur_act.contains(&p_val) {
-                                                    cur_act.push(p_val.clone());
+                                rsx! {
+                                    div { class: if is_cached { "addon on" } else { "addon" },
+                                        div { class: "mark",
+                                            if is_cached {
+                                                svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
+                                                    path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
                                                 }
-                                                addons_active.set(cur_act.clone());
+                                            }
+                                        }
+                                        div { class: "body",
+                                            div { class: "t",
+                                                "DLSS Studio D3D12 Mip Companion"
+                                                if has_update {
+                                                    span { class: "tag update-avail", "{current_tag} \u{2192} {latest_tag}" }
+                                                } else if is_cached {
+                                                    span { class: "tag", "{current_tag}" }
+                                                } else {
+                                                    span { class: "tag", "{latest_tag}" }
+                                                }
+                                            }
+                                            div { class: "d", "dlss-mip-fix.addon64 \u{00B7} Pure Rust Add-on \u{00B7} 147 KB" }
+                                            div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} https://github.com/bookamp/dlss-studio"
+                                            }
+                                            div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"addon_dlss5_d3d12_fix_desc\")}"
+                                            }
+                                        }
+                                        div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
+                                            if is_updating {
+                                                span { class: "tag warn", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;",
+                                                    span { class: "spin-icon", "?" }
+                                                    "{status_percent.read():.0}%"
+                                                }
+                                            } else if has_update {
+                                                button {
+                                                    class: "btn-addon-update",
+                                                    onclick: move |_| {
+                                                        let lt = latest_tag.clone();
+                                                        spawn(async move {
+                                                            active_updating_addon.set(Some(id));
+                                                            is_downloading_components.set(true);
+                                                            status_state.set(AppStatus::DownloadingComponents);
+                                                            let _ = crate::core::addons::update_single_addon(id, |prog| {
+                                                                status_percent.set(prog.percentage);
+                                                                if prog.is_downloading {
+                                                                    component_download_progress.set(Some(prog));
+                                                                } else {
+                                                                    component_download_progress.set(None);
+                                                                }
+                                                            }).await;
+                                                            active_updating_addon.set(None);
+                                                            is_downloading_components.set(false);
+                                                            component_download_progress.set(None);
+                                                            status_state.set(AppStatus::Ready);
+                                                            status_percent.set(100.0);
 
-                                                let mut s = crate::core::state::load_state();
-                                                s.addon_files = list;
-                                                s.addons = cur_act;
-                                                let _ = crate::core::state::save_state(&s);
+                                                            let list = crate::core::addons::check_all_addon_updates_force().await;
+                                                            let mut map = std::collections::HashMap::new();
+                                                            for item in list { map.insert(item.id, item); }
+                                                            addon_updates.set(map);
+                                                            copy_toast_text.set(crate::core::i18n::t_params(&current_lang.read(), "toast_addon_updated", &[id.name(), &lt]));
+                                                            *toast_generation.write() += 1;
+                                                            copy_toast.set(true);
+                                                        });
+                                                    },
+                                                    "Update to {latest_tag}"
+                                                }
+                                            } else if is_cached {
+                                                span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
+                                                    "\u{2713} {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
+                                                }
+                                            } else {
+                                                button {
+                                                    class: "tag warn",
+                                                    style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
+                                                    title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
+                                                    onclick: move |_| {
+                                                        *trigger_component_download.write() += 1;
+                                                    },
+                                                    if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
+                                                        "{status_percent.read():.0}% ..."
+                                                    } else {
+                                                        "? {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
 
-                                                show_addon_dlg.set(false);
-                                                copy_toast_text.set(crate::core::i18n::t(&current_lang.read(), "toast_addon_registered").to_string());
-                                                *toast_generation.write() += 1;
-                                                copy_toast.set(true);
-                                                log_message(&format!("@{{log_addon_imported|{}}}", p_val));
-                                                activity_log.set(get_session_log());
-                                            },
-                                            "{crate::core::i18n::t(&current_lang.read(), \"btn_save\")}"
+                            // 3. RenoDX 4x MFG Unlock
+                            {
+                                let id = crate::core::addons::AddonId::RenoDxMfgUnlock;
+                                let is_cached = crate::core::addons::is_mfg_addon_cached();
+                                let u_info = addon_updates.read().get(&id).cloned();
+                                let has_update = u_info.as_ref().map(|u| u.update_available && u.current_version.is_some()).unwrap_or(false);
+                                let latest_tag = u_info.as_ref().and_then(|u| u.latest_version.clone()).unwrap_or_else(|| "1.4.1".to_string());
+                                let current_tag = u_info.as_ref().and_then(|u| u.current_version.clone()).unwrap_or_else(|| crate::core::addons::get_local_addon_version(id).unwrap_or_else(|| "1.4.1".to_string()));
+                                let is_updating = *active_updating_addon.read() == Some(id) || (*addon_update_batch_active.read() && has_update);
+
+                                rsx! {
+                                    div { class: if is_cached { "addon on" } else { "addon" },
+                                        div { class: "mark",
+                                            if is_cached {
+                                                svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
+                                                    path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
+                                                }
+                                            }
+                                        }
+                                        div { class: "body",
+                                            div { class: "t",
+                                                "RenoDX 4x MFG Unlock"
+                                                if has_update {
+                                                    span { class: "tag update-avail", "{current_tag} \u{2192} {latest_tag}" }
+                                                } else if is_cached {
+                                                    span { class: "tag", "{current_tag}" }
+                                                } else {
+                                                    span { class: "tag", "{latest_tag}" }
+                                                }
+                                            }
+                                            div { class: "d", "renodx-mfgunlock.addon64 \u{00B7} {crate::core::i18n::t(&current_lang.read(), \"meta_sha256_verified\")} \u{00B7} 528 KB" }
+                                            div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} https://github.com/mavismmg/MFGAdaUnlock-RenoDx"
+                                            }
+                                            div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"addon_mfg_desc\")}"
+                                            }
+                                        }
+                                        div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
+                                            if is_updating {
+                                                span { class: "tag warn", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;",
+                                                    span { class: "spin-icon", "?" }
+                                                    "{status_percent.read():.0}%"
+                                                }
+                                            } else if has_update {
+                                                button {
+                                                    class: "btn-addon-update",
+                                                    onclick: move |_| {
+                                                        let lt = latest_tag.clone();
+                                                        spawn(async move {
+                                                            active_updating_addon.set(Some(id));
+                                                            is_downloading_components.set(true);
+                                                            status_state.set(AppStatus::DownloadingComponents);
+                                                            let _ = crate::core::addons::update_single_addon(id, |prog| {
+                                                                status_percent.set(prog.percentage);
+                                                                if prog.is_downloading {
+                                                                    component_download_progress.set(Some(prog));
+                                                                } else {
+                                                                    component_download_progress.set(None);
+                                                                }
+                                                            }).await;
+                                                            active_updating_addon.set(None);
+                                                            is_downloading_components.set(false);
+                                                            component_download_progress.set(None);
+                                                            status_state.set(AppStatus::Ready);
+                                                            status_percent.set(100.0);
+
+                                                            let list = crate::core::addons::check_all_addon_updates_force().await;
+                                                            let mut map = std::collections::HashMap::new();
+                                                            for item in list { map.insert(item.id, item); }
+                                                            addon_updates.set(map);
+                                                            copy_toast_text.set(crate::core::i18n::t_params(&current_lang.read(), "toast_addon_updated", &[id.name(), &lt]));
+                                                            *toast_generation.write() += 1;
+                                                            copy_toast.set(true);
+                                                        });
+                                                    },
+                                                    "Update to {latest_tag}"
+                                                }
+                                            } else if is_cached {
+                                                span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
+                                                    "\u{2713} {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
+                                                }
+                                            } else {
+                                                button {
+                                                    class: "tag warn",
+                                                    style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
+                                                    title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
+                                                    onclick: move |_| {
+                                                        *trigger_component_download.write() += 1;
+                                                    },
+                                                    if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
+                                                        "{status_percent.read():.0}% ..."
+                                                    } else {
+                                                        "? {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 4. DLSS 5 Feeder (Neural Pipeline Interceptor)
+                            {
+                                let id = crate::core::addons::AddonId::Dlss5Feeder;
+                                let is_cached = crate::core::addons::is_feeder_cached();
+                                let u_info = addon_updates.read().get(&id).cloned();
+                                let has_update = u_info.as_ref().map(|u| u.update_available && u.current_version.is_some()).unwrap_or(false);
+                                let latest_tag = u_info.as_ref().and_then(|u| u.latest_version.clone()).unwrap_or_else(|| "v1.18.0-beta.1".to_string());
+                                let current_tag = u_info.as_ref().and_then(|u| u.current_version.clone()).unwrap_or_else(|| crate::core::addons::get_local_addon_version(id).unwrap_or_else(|| "v1.18.0-beta.1".to_string()));
+                                let is_updating = *active_updating_addon.read() == Some(id) || (*addon_update_batch_active.read() && has_update);
+
+                                rsx! {
+                                    div { class: if is_cached { "addon on" } else { "addon" },
+                                        div { class: "mark",
+                                            if is_cached {
+                                                svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
+                                                    path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
+                                                }
+                                            }
+                                        }
+                                        div { class: "body",
+                                            div { class: "t",
+                                                "DLSS 5 Feeder (Neural Pipeline Interceptor)"
+                                                if has_update {
+                                                    span { class: "tag update-avail", "{current_tag} \u{2192} {latest_tag}" }
+                                                } else if is_cached {
+                                                    span { class: "tag", "{current_tag}" }
+                                                } else {
+                                                    span { class: "tag", "{latest_tag}" }
+                                                }
+                                            }
+                                            div { class: "d", "dlss5-feed.addon64 + DLSS5_Feed.fx + vort_Motion.fx \u{00B7} {crate::core::i18n::t(&current_lang.read(), \"meta_sha256_verified\")} \u{00B7} 4.8 MB" }
+                                            div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} https://github.com/jlrouzies-fr/DLSS5-Feeder"
+                                            }
+                                            div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"addon_feeder_desc\")}"
+                                            }
+                                        }
+                                        div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
+                                            if is_updating {
+                                                span { class: "tag warn", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;",
+                                                    span { class: "spin-icon", "?" }
+                                                    "{status_percent.read():.0}%"
+                                                }
+                                            } else if has_update {
+                                                button {
+                                                    class: "btn-addon-update",
+                                                    onclick: move |_| {
+                                                        let lt = latest_tag.clone();
+                                                        spawn(async move {
+                                                            active_updating_addon.set(Some(id));
+                                                            is_downloading_components.set(true);
+                                                            status_state.set(AppStatus::DownloadingComponents);
+                                                            let _ = crate::core::addons::update_single_addon(id, |prog| {
+                                                                status_percent.set(prog.percentage);
+                                                                if prog.is_downloading {
+                                                                    component_download_progress.set(Some(prog));
+                                                                } else {
+                                                                    component_download_progress.set(None);
+                                                                }
+                                                            }).await;
+                                                            active_updating_addon.set(None);
+                                                            is_downloading_components.set(false);
+                                                            component_download_progress.set(None);
+                                                            status_state.set(AppStatus::Ready);
+                                                            status_percent.set(100.0);
+
+                                                            let list = crate::core::addons::check_all_addon_updates_force().await;
+                                                            let mut map = std::collections::HashMap::new();
+                                                            for item in list { map.insert(item.id, item); }
+                                                            addon_updates.set(map);
+                                                            copy_toast_text.set(crate::core::i18n::t_params(&current_lang.read(), "toast_addon_updated", &[id.name(), &lt]));
+                                                            *toast_generation.write() += 1;
+                                                            copy_toast.set(true);
+                                                        });
+                                                    },
+                                                    "Update to {latest_tag}"
+                                                }
+                                            } else if is_cached {
+                                                span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
+                                                    "\u{2713} {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
+                                                }
+                                            } else {
+                                                button {
+                                                    class: "tag warn",
+                                                    style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
+                                                    title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
+                                                    onclick: move |_| {
+                                                        *trigger_component_download.write() += 1;
+                                                    },
+                                                    if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
+                                                        "{status_percent.read():.0}% ..."
+                                                    } else {
+                                                        "? {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 5. RTX40MFG-Unlock (Universal Frame Generation)
+                            {
+                                let id = crate::core::addons::AddonId::Rtx40Mfg;
+                                let is_cached = crate::core::addons::is_rtxmfg_cached();
+                                let u_info = addon_updates.read().get(&id).cloned();
+                                let has_update = u_info.as_ref().map(|u| u.update_available && u.current_version.is_some()).unwrap_or(false);
+                                let latest_tag = u_info.as_ref().and_then(|u| u.latest_version.clone()).unwrap_or_else(|| "v1.4.1-hotfix.1".to_string());
+                                let current_tag = u_info.as_ref().and_then(|u| u.current_version.clone()).unwrap_or_else(|| crate::core::addons::get_local_addon_version(id).unwrap_or_else(|| "v1.4.1-hotfix.1".to_string()));
+                                let is_updating = *active_updating_addon.read() == Some(id) || (*addon_update_batch_active.read() && has_update);
+
+                                rsx! {
+                                    div { class: if is_cached { "addon on" } else { "addon" },
+                                        div { class: "mark",
+                                            if is_cached {
+                                                svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
+                                                    path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
+                                                }
+                                            }
+                                        }
+                                        div { class: "body",
+                                            div { class: "t",
+                                                "RTX40MFG-Unlock (Universal Frame Generation)"
+                                                if has_update {
+                                                    span { class: "tag update-avail", "{current_tag} \u{2192} {latest_tag}" }
+                                                } else if is_cached {
+                                                    span { class: "tag", "{current_tag}" }
+                                                } else {
+                                                    span { class: "tag", "{latest_tag}" }
+                                                }
+                                            }
+                                            div { class: "d", "RTXMFG.dll \u{00B7} Universal MFG Bridge \u{00B7} Native Module \u{00B7} ~1.2 MB" }
+                                            div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} https://github.com/dashdogy/RTX40MFG-Unlock"
+                                            }
+                                            div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"addon_rtxmfg_desc\")}"
+                                            }
+                                        }
+                                        div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
+                                            if is_updating {
+                                                span { class: "tag warn", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;",
+                                                    span { class: "spin-icon", "?" }
+                                                    "{status_percent.read():.0}%"
+                                                }
+                                            } else if has_update {
+                                                button {
+                                                    class: "btn-addon-update",
+                                                    onclick: move |_| {
+                                                        let lt = latest_tag.clone();
+                                                        spawn(async move {
+                                                            active_updating_addon.set(Some(id));
+                                                            is_downloading_components.set(true);
+                                                            status_state.set(AppStatus::DownloadingComponents);
+                                                            let _ = crate::core::addons::update_single_addon(id, |prog| {
+                                                                status_percent.set(prog.percentage);
+                                                                if prog.is_downloading {
+                                                                    component_download_progress.set(Some(prog));
+                                                                } else {
+                                                                    component_download_progress.set(None);
+                                                                }
+                                                            }).await;
+                                                            active_updating_addon.set(None);
+                                                            is_downloading_components.set(false);
+                                                            component_download_progress.set(None);
+                                                            status_state.set(AppStatus::Ready);
+                                                            status_percent.set(100.0);
+
+                                                            let list = crate::core::addons::check_all_addon_updates_force().await;
+                                                            let mut map = std::collections::HashMap::new();
+                                                            for item in list { map.insert(item.id, item); }
+                                                            addon_updates.set(map);
+                                                            copy_toast_text.set(crate::core::i18n::t_params(&current_lang.read(), "toast_addon_updated", &[id.name(), &lt]));
+                                                            *toast_generation.write() += 1;
+                                                            copy_toast.set(true);
+                                                        });
+                                                    },
+                                                    "Update to {latest_tag}"
+                                                }
+                                            } else if is_cached {
+                                                span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
+                                                    "\u{2713} {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
+                                                }
+                                            } else {
+                                                button {
+                                                    class: "tag warn",
+                                                    style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
+                                                    title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
+                                                    onclick: move |_| {
+                                                        *trigger_component_download.write() += 1;
+                                                    },
+                                                    if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
+                                                        "{status_percent.read():.0}% ..."
+                                                    } else {
+                                                        "? {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 6. OptiScaler DLSS-NR Pre-SR Multi-pass
+                            {
+                                let id = crate::core::addons::AddonId::OptiScaler;
+                                let is_cached = crate::core::addons::is_optiscaler_cached();
+                                let u_info = addon_updates.read().get(&id).cloned();
+                                let has_update = u_info.as_ref().map(|u| u.update_available && u.current_version.is_some()).unwrap_or(false);
+                                let latest_tag = u_info.as_ref().and_then(|u| u.latest_version.clone()).unwrap_or_else(|| "v0.8.91".to_string());
+                                let current_tag = u_info.as_ref().and_then(|u| u.current_version.clone()).unwrap_or_else(|| crate::core::addons::get_local_addon_version(id).unwrap_or_else(|| "v0.8.91".to_string()));
+                                let is_updating = *active_updating_addon.read() == Some(id) || (*addon_update_batch_active.read() && has_update);
+
+                                rsx! {
+                                    div { class: if is_cached { "addon on" } else { "addon" },
+                                        div { class: "mark",
+                                            if is_cached {
+                                                svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
+                                                    path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
+                                                }
+                                            }
+                                        }
+                                        div { class: "body",
+                                            div { class: "t",
+                                                "OptiScaler DLSS-NR Pre-SR Multi-pass"
+                                                if has_update {
+                                                    span { class: "tag update-avail", "{current_tag} \u{2192} {latest_tag}" }
+                                                } else if is_cached {
+                                                    span { class: "tag", "{current_tag}" }
+                                                } else {
+                                                    span { class: "tag", "{latest_tag}" }
+                                                }
+                                            }
+                                            div { class: "d", "OptiScaler.dll \u{00B7} {crate::core::i18n::t(&current_lang.read(), \"meta_sha256_verified\")} \u{00B7} 2.4 MB" }
+                                            div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass"
+                                            }
+                                            div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"addon_optiscaler_desc\")}"
+                                            }
+                                        }
+                                        div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
+                                            if is_updating {
+                                                span { class: "tag warn", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;",
+                                                    span { class: "spin-icon", "?" }
+                                                    "{status_percent.read():.0}%"
+                                                }
+                                            } else if has_update {
+                                                button {
+                                                    class: "btn-addon-update",
+                                                    onclick: move |_| {
+                                                        let lt = latest_tag.clone();
+                                                        spawn(async move {
+                                                            active_updating_addon.set(Some(id));
+                                                            is_downloading_components.set(true);
+                                                            status_state.set(AppStatus::DownloadingComponents);
+                                                            let _ = crate::core::addons::update_single_addon(id, |prog| {
+                                                                status_percent.set(prog.percentage);
+                                                                if prog.is_downloading {
+                                                                    component_download_progress.set(Some(prog));
+                                                                } else {
+                                                                    component_download_progress.set(None);
+                                                                }
+                                                            }).await;
+                                                            active_updating_addon.set(None);
+                                                            is_downloading_components.set(false);
+                                                            component_download_progress.set(None);
+                                                            status_state.set(AppStatus::Ready);
+                                                            status_percent.set(100.0);
+
+                                                            let list = crate::core::addons::check_all_addon_updates_force().await;
+                                                            let mut map = std::collections::HashMap::new();
+                                                            for item in list { map.insert(item.id, item); }
+                                                            addon_updates.set(map);
+                                                            copy_toast_text.set(crate::core::i18n::t_params(&current_lang.read(), "toast_addon_updated", &[id.name(), &lt]));
+                                                            *toast_generation.write() += 1;
+                                                            copy_toast.set(true);
+                                                        });
+                                                    },
+                                                    "Update to {latest_tag}"
+                                                }
+                                            } else if is_cached {
+                                                span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
+                                                    "\u{2713} {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
+                                                }
+                                            } else {
+                                                button {
+                                                    class: "tag warn",
+                                                    style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
+                                                    title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
+                                                    onclick: move |_| {
+                                                        *trigger_component_download.write() += 1;
+                                                    },
+                                                    if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
+                                                        "{status_percent.read():.0}% ..."
+                                                    } else {
+                                                        "? {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 7. ReShade (Add-on Host Runtime)
+                            {
+                                let id = crate::core::addons::AddonId::ReShade;
+                                let is_cached = crate::core::addons::is_reshade_cached();
+                                let u_info = addon_updates.read().get(&id).cloned();
+                                let has_update = u_info.as_ref().map(|u| u.update_available && u.current_version.is_some()).unwrap_or(false);
+                                let latest_tag = u_info.as_ref().and_then(|u| u.latest_version.clone()).unwrap_or_else(|| "v6.8.0".to_string());
+                                let current_tag = u_info.as_ref().and_then(|u| u.current_version.clone()).unwrap_or_else(|| crate::core::addons::get_local_addon_version(id).unwrap_or_else(|| "v6.8.0".to_string()));
+                                let is_updating = *active_updating_addon.read() == Some(id) || (*addon_update_batch_active.read() && has_update);
+
+                                rsx! {
+                                    div { class: if is_cached { "addon on" } else { "addon" },
+                                        div { class: "mark",
+                                            if is_cached {
+                                                svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
+                                                    path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
+                                                }
+                                            }
+                                        }
+                                        div { class: "body",
+                                            div { class: "t",
+                                                "ReShade (Add-on Host Runtime)"
+                                                if has_update {
+                                                    span { class: "tag update-avail", "{current_tag} \u{2192} {latest_tag}" }
+                                                } else if is_cached {
+                                                    span { class: "tag", "{current_tag}" }
+                                                } else {
+                                                    span { class: "tag", "{latest_tag}" }
+                                                }
+                                            }
+                                            div { class: "d", "ReShade64.dll \u{00B7} v6.8.0 \u{00B7} {crate::core::i18n::t(&current_lang.read(), \"meta_full_addon_support\")} \u{00B7} 5.3 MB" }
+                                            div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} https://reshade.me"
+                                            }
+                                            div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"addon_reshade_desc\")}"
+                                            }
+                                        }
+                                        div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
+                                            if is_updating {
+                                                span { class: "tag warn", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;",
+                                                    span { class: "spin-icon", "?" }
+                                                    "{status_percent.read():.0}%"
+                                                }
+                                            } else if has_update {
+                                                button {
+                                                    class: "btn-addon-update",
+                                                    onclick: move |_| {
+                                                        let lt = latest_tag.clone();
+                                                        spawn(async move {
+                                                            active_updating_addon.set(Some(id));
+                                                            is_downloading_components.set(true);
+                                                            status_state.set(AppStatus::DownloadingComponents);
+                                                            let _ = crate::core::addons::update_single_addon(id, |prog| {
+                                                                status_percent.set(prog.percentage);
+                                                                if prog.is_downloading {
+                                                                    component_download_progress.set(Some(prog));
+                                                                } else {
+                                                                    component_download_progress.set(None);
+                                                                }
+                                                            }).await;
+                                                            active_updating_addon.set(None);
+                                                            is_downloading_components.set(false);
+                                                            component_download_progress.set(None);
+                                                            status_state.set(AppStatus::Ready);
+                                                            status_percent.set(100.0);
+
+                                                            let list = crate::core::addons::check_all_addon_updates_force().await;
+                                                            let mut map = std::collections::HashMap::new();
+                                                            for item in list { map.insert(item.id, item); }
+                                                            addon_updates.set(map);
+                                                            copy_toast_text.set(crate::core::i18n::t_params(&current_lang.read(), "toast_addon_updated", &[id.name(), &lt]));
+                                                            *toast_generation.write() += 1;
+                                                            copy_toast.set(true);
+                                                        });
+                                                    },
+                                                    "Update to {latest_tag}"
+                                                }
+                                            } else if is_cached {
+                                                span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
+                                                    "\u{2713} {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
+                                                }
+                                            } else {
+                                                button {
+                                                    class: "tag warn",
+                                                    style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
+                                                    title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
+                                                    onclick: move |_| {
+                                                        *trigger_component_download.write() += 1;
+                                                    },
+                                                    if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
+                                                        "{status_percent.read():.0}% ..."
+                                                    } else {
+                                                        "? {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 8. NVIDIA Streamline Runtime
+                            {
+                                let id = crate::core::addons::AddonId::Streamline;
+                                let is_cached = crate::core::addons::is_streamline_cached();
+                                let u_info = addon_updates.read().get(&id).cloned();
+                                let has_update = u_info.as_ref().map(|u| u.update_available && u.current_version.is_some()).unwrap_or(false);
+                                let latest_tag = u_info.as_ref().and_then(|u| u.latest_version.clone()).unwrap_or_else(|| "v2.14.1".to_string());
+                                let current_tag = u_info.as_ref().and_then(|u| u.current_version.clone()).unwrap_or_else(|| crate::core::addons::get_local_addon_version(id).unwrap_or_else(|| "v2.14.1".to_string()));
+                                let is_updating = *active_updating_addon.read() == Some(id) || (*addon_update_batch_active.read() && has_update);
+
+                                rsx! {
+                                    div { class: if is_cached { "addon on" } else { "addon" },
+                                        div { class: "mark",
+                                            if is_cached {
+                                                svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
+                                                    path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
+                                                }
+                                            }
+                                        }
+                                        div { class: "body",
+                                            div { class: "t",
+                                                "NVIDIA Streamline Runtime"
+                                                if has_update {
+                                                    span { class: "tag update-avail", "{current_tag} \u{2192} {latest_tag}" }
+                                                } else if is_cached {
+                                                    span { class: "tag", "{current_tag}" }
+                                                } else {
+                                                    span { class: "tag", "{latest_tag}" }
+                                                }
+                                            }
+                                            div { class: "d", "sl.interposer.dll \u{00B7} v2.14.1 \u{00B7} {crate::core::i18n::t(&current_lang.read(), \"meta_streamline_interposer\")} \u{00B7} 1.2 MB" }
+                                            div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} https://github.com/yumlevi/renodx-dlss-installer"
+                                            }
+                                            div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"addon_streamline_desc\")}"
+                                            }
+                                        }
+                                        div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
+                                            if is_updating {
+                                                span { class: "tag warn", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;",
+                                                    span { class: "spin-icon", "?" }
+                                                    "{status_percent.read():.0}%"
+                                                }
+                                            } else if has_update {
+                                                button {
+                                                    class: "btn-addon-update",
+                                                    onclick: move |_| {
+                                                        let lt = latest_tag.clone();
+                                                        spawn(async move {
+                                                            active_updating_addon.set(Some(id));
+                                                            is_downloading_components.set(true);
+                                                            status_state.set(AppStatus::DownloadingComponents);
+                                                            let _ = crate::core::addons::update_single_addon(id, |prog| {
+                                                                status_percent.set(prog.percentage);
+                                                                if prog.is_downloading {
+                                                                    component_download_progress.set(Some(prog));
+                                                                } else {
+                                                                    component_download_progress.set(None);
+                                                                }
+                                                            }).await;
+                                                            active_updating_addon.set(None);
+                                                            is_downloading_components.set(false);
+                                                            component_download_progress.set(None);
+                                                            status_state.set(AppStatus::Ready);
+                                                            status_percent.set(100.0);
+
+                                                            let list = crate::core::addons::check_all_addon_updates_force().await;
+                                                            let mut map = std::collections::HashMap::new();
+                                                            for item in list { map.insert(item.id, item); }
+                                                            addon_updates.set(map);
+                                                            copy_toast_text.set(crate::core::i18n::t_params(&current_lang.read(), "toast_addon_updated", &[id.name(), &lt]));
+                                                            *toast_generation.write() += 1;
+                                                            copy_toast.set(true);
+                                                        });
+                                                    },
+                                                    "Update to {latest_tag}"
+                                                }
+                                            } else if is_cached {
+                                                span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
+                                                    "\u{2713} {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
+                                                }
+                                            } else {
+                                                button {
+                                                    class: "tag warn",
+                                                    style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
+                                                    title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
+                                                    onclick: move |_| {
+                                                        *trigger_component_download.write() += 1;
+                                                    },
+                                                    if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
+                                                        "{status_percent.read():.0}% ..."
+                                                    } else {
+                                                        "? {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 9. dgVoodoo2 (Legacy DirectX Wrapper)
+                            {
+                                let id = crate::core::addons::AddonId::DgVoodoo;
+                                let is_cached = crate::core::addons::is_dgvoodoo_cached();
+                                let u_info = addon_updates.read().get(&id).cloned();
+                                let has_update = u_info.as_ref().map(|u| u.update_available && u.current_version.is_some()).unwrap_or(false);
+                                let latest_tag = u_info.as_ref().and_then(|u| u.latest_version.clone()).unwrap_or_else(|| "v2.87.5".to_string());
+                                let current_tag = u_info.as_ref().and_then(|u| u.current_version.clone()).unwrap_or_else(|| crate::core::addons::get_local_addon_version(id).unwrap_or_else(|| "v2.87.5".to_string()));
+                                let is_updating = *active_updating_addon.read() == Some(id) || (*addon_update_batch_active.read() && has_update);
+
+                                rsx! {
+                                    div { class: if is_cached { "addon on" } else { "addon" },
+                                        div { class: "mark",
+                                            if is_cached {
+                                                svg { style: "width:18px; height:18px; fill:currentColor;", view_box: "0 0 24 24",
+                                                    path { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" }
+                                                }
+                                            }
+                                        }
+                                        div { class: "body",
+                                            div { class: "t",
+                                                "dgVoodoo2 (Legacy DirectX Wrapper)"
+                                                if has_update {
+                                                    span { class: "tag update-avail", "{current_tag} \u{2192} {latest_tag}" }
+                                                } else if is_cached {
+                                                    span { class: "tag", "{current_tag}" }
+                                                } else {
+                                                    span { class: "tag", "{latest_tag}" }
+                                                }
+                                            }
+                                            div { class: "d", "d3d9.dll / d3d8.dll \u{00B7} v2.87.5 \u{00B7} D3D -> D3D11 Translation \u{00B7} 1.4 MB" }
+                                            div { class: "dim", style: "font-size:0.75em; margin-top:3px; opacity:0.75; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"label_source\")} https://github.com/dege-diosg/dgVoodoo2"
+                                            }
+                                            div { class: "dim", style: "font-size:0.82em; margin-top:4px;",
+                                                "{crate::core::i18n::t(&current_lang.read(), \"addon_dgvoodoo_desc\")}"
+                                            }
+                                        }
+                                        div { class: "addon-status-core", style: "display:flex; align-items:center; gap:8px;",
+                                            if is_updating {
+                                                span { class: "tag warn", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;",
+                                                    span { class: "spin-icon", "?" }
+                                                    "{status_percent.read():.0}%"
+                                                }
+                                            } else if has_update {
+                                                button {
+                                                    class: "btn-addon-update",
+                                                    onclick: move |_| {
+                                                        let lt = latest_tag.clone();
+                                                        spawn(async move {
+                                                            active_updating_addon.set(Some(id));
+                                                            is_downloading_components.set(true);
+                                                            status_state.set(AppStatus::DownloadingComponents);
+                                                            let _ = crate::core::addons::update_single_addon(id, |prog| {
+                                                                status_percent.set(prog.percentage);
+                                                                if prog.is_downloading {
+                                                                    component_download_progress.set(Some(prog));
+                                                                } else {
+                                                                    component_download_progress.set(None);
+                                                                }
+                                                            }).await;
+                                                            active_updating_addon.set(None);
+                                                            is_downloading_components.set(false);
+                                                            component_download_progress.set(None);
+                                                            status_state.set(AppStatus::Ready);
+                                                            status_percent.set(100.0);
+
+                                                            let list = crate::core::addons::check_all_addon_updates_force().await;
+                                                            let mut map = std::collections::HashMap::new();
+                                                            for item in list { map.insert(item.id, item); }
+                                                            addon_updates.set(map);
+                                                            copy_toast_text.set(crate::core::i18n::t_params(&current_lang.read(), "toast_addon_updated", &[id.name(), &lt]));
+                                                            *toast_generation.write() += 1;
+                                                            copy_toast.set(true);
+                                                        });
+                                                    },
+                                                    "Update to {latest_tag}"
+                                                }
+                                            } else if is_cached {
+                                                span { class: "tag accent", style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px;",
+                                                    "\u{2713} {crate::core::i18n::t(&current_lang.read(), \"addon_core_badge\")}"
+                                                }
+                                            } else {
+                                                button {
+                                                    class: "tag warn",
+                                                    style: "font-weight:600; font-size:0.75rem; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.5px; cursor: pointer; border: none; background: rgba(245, 158, 11, 0.2); color: #f59e0b;",
+                                                    title: crate::core::i18n::t(&current_lang.read(), "tooltip_retry_download"),
+                                                    onclick: move |_| {
+                                                        *trigger_component_download.write() += 1;
+                                                    },
+                                                    if matches!(*status_state.read(), AppStatus::DownloadingComponents) {
+                                                        "{status_percent.read():.0}% ..."
+                                                    } else {
+                                                        "? {crate::core::i18n::t(&current_lang.read(), \"btn_retry_download\")}"
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -3254,8 +3535,8 @@ pub fn App() -> Element {
                         let is_vulkan = api_lower.contains("vulkan");
                         let is_dx11 = (api_lower.contains("11") || api_lower == "d3d11") && !is_dx12;
                         target_game.can_inject_fg = target_game.bitness == 64 && has_native_dlss && !target_game.has_frame_generation && (is_dx12 || is_dx11);
-                        let opti_advisory = crate::core::install_routes::get_optiscaler_advisory(&target_game);
-                        let native_advisory = crate::core::install_routes::get_native_dlss_advisory(&target_game);
+                        let opti_advisory = crate::core::advisories::get_optiscaler_advisory(&target_game);
+                        let native_advisory = crate::core::advisories::get_native_dlss_advisory(&target_game);
                         let ac_warning = target_game.has_anti_cheat;
                         let _has_dlss = target_game.dlss_version.is_some();
                         let cur_backend = backend_choice.read().clone();
@@ -3270,29 +3551,20 @@ pub fn App() -> Element {
                         } else {
                             "feeder".to_string()
                         };
-                        let mfg_advisory = crate::core::install_routes::get_mfg_advisory_with_route(
+                        let active_advisories = crate::core::advisories::collect_advisories(
+                            &target_game,
+                            &effective_backend,
+                            &effective_route,
+                            *mfg_choice.read(),
+                            primary_gpu.is_rtx_40,
+                        );
+                        let mfg_advisory = crate::core::advisories::get_mfg_advisory_with_route(
                             &target_game,
                             primary_gpu.is_rtx_40,
                             Some(&effective_backend),
                             Some(&effective_route),
                         );
-
-                        let mut active_advisories: Vec<crate::core::install_routes::RouteAdvisory> = Vec::new();
-                        if effective_backend == "optiscaler" {
-                            if let Some(adv) = &opti_advisory {
-                                active_advisories.push(adv.clone());
-                            }
-                        } else if effective_route == "native" {
-                            if let Some(adv) = &native_advisory {
-                                active_advisories.push(adv.clone());
-                            }
-                        }
-                        if *mfg_choice.read() {
-                            if let Some(adv) = &mfg_advisory {
-                                active_advisories.push(adv.clone());
-                            }
-                        }
-                        let has_override = active_advisories.iter().any(|a| a.severity == crate::core::install_routes::AdvisorySeverity::Warning);
+                        let has_override = active_advisories.iter().any(|a| a.severity == crate::core::advisories::AdvisorySeverity::Warning);
 
                         let show_mfg = true;
                         let show_pre_sr = effective_backend == "optiscaler";
@@ -3308,7 +3580,7 @@ pub fn App() -> Element {
                         } else {
                             crate::core::i18n::t(&current_lang.read(), "feeder_label_general")
                         };
-                        let opti_display = if opti_advisory.as_ref().map(|a| a.severity == crate::core::install_routes::AdvisorySeverity::Warning).unwrap_or(false) {
+                        let opti_display = if opti_advisory.as_ref().map(|a| a.severity == crate::core::advisories::AdvisorySeverity::Warning).unwrap_or(false) {
                             format!("{} ⚠️", crate::core::i18n::t(&current_lang.read(), "opt_optiscaler_dlssnr"))
                         } else {
                             crate::core::i18n::t(&current_lang.read(), "opt_optiscaler_dlssnr").to_string()
@@ -3526,7 +3798,7 @@ pub fn App() -> Element {
                                                                         || current_games[pos].reshade_installed
                                                                         || current_games[pos].has_backup;
                                                                     if !is_deployed {
-                                                                        let rec = crate::core::install_routes::recommended_route(&current_games[pos]);
+                                                                        let rec = crate::core::routes::recommended_route(&current_games[pos]);
                                                                         route_choice.set(rec.as_str().to_string());
                                                                     }
 
@@ -3609,7 +3881,7 @@ pub fn App() -> Element {
                                     div { class: "spec",
                                         span { class: "k", "{crate::core::i18n::t(&current_lang.read(), \"spec_frame_generation\")}" }
                                         {
-                                            let (fg_status_label, fg_is_on) = crate::core::install_routes::frame_generation_status(&target_game);
+                                            let (fg_status_label, fg_is_on) = crate::core::routes::frame_generation_status(&target_game);
                                             rsx! {
                                                 if fg_is_on {
                                                     span { class: "v on", "{fg_status_label}" }
@@ -3679,7 +3951,7 @@ pub fn App() -> Element {
 
                                 for adv in &active_advisories {
                                     {
-                                        let is_info = adv.severity == crate::core::install_routes::AdvisorySeverity::Info;
+                                        let is_info = adv.severity == crate::core::advisories::AdvisorySeverity::Info;
                                         let card_class = if is_info { "emu-note info-notice" } else { "emu-note incompatibility-warning" };
                                         let title_text = if is_info {
                                             crate::core::i18n::t_param(&current_lang.read(), "advisory_notice_info", &adv.title)
@@ -3965,7 +4237,7 @@ pub fn App() -> Element {
                                                                     lines.push(format!("@{{log_routing_target|{}}}", mod_root.display()));
                                                                     job_lines.set(lines.clone());
 
-                                                                    let deploy_opts = crate::core::optiscaler::DeployOptions {
+                                                                    let deploy_opts = crate::core::routes::DeployOptions {
                                                                         game_name: Some(target_game.name.clone()),
                                                                         game_dir: target_game.dir.clone(),
                                                                         exe_path: target_game.exe_path.clone(),
@@ -3979,7 +4251,7 @@ pub fn App() -> Element {
                                                                     };
 
                                                                     // Asynchronously fetch/verify Feeder components and latest MFG unlock if required
-                                                                    let mut payloads = match crate::core::optiscaler::PayloadBundle::from_system() {
+                                                                    let mut payloads = match crate::core::payloads::PayloadBundle::from_system() {
                                                                         Ok(p) => p,
                                                                         Err(e) => {
                                                                             lines.push(format!("[ERROR] System payload resolution failed: {}", e));
@@ -3988,39 +4260,42 @@ pub fn App() -> Element {
                                                                             return;
                                                                         }
                                                                     };
-                                                                    if cur_eff_backend != "optiscaler" && cur_eff_route == "feeder" {
-                                                                        if payloads.feeder_components.is_none() {
-                                                                            match crate::core::downloader::ensure_feeder_components(&mut lines).await {
-                                                                                Ok(fc) => {
-                                                                                    payloads.feeder_components = Some(fc);
-                                                                                    job_lines.set(lines.clone());
+                                                                    if cur_eff_backend != "optiscaler" {
+                                                                        if cur_eff_route == "feeder" {
+                                                                            if payloads.feeder_components.is_none() {
+                                                                                match crate::core::addons::ensure_feeder_components(&mut lines).await {
+                                                                                    Ok(fc) => {
+                                                                                        payloads.feeder_components = Some(fc);
+                                                                                        job_lines.set(lines.clone());
+                                                                                    }
+                                                                                    Err(e) => {
+                                                                                        lines.push(format!("[ERROR] Feeder component resolution failed: {}", e));
+                                                                                        job_lines.set(lines);
+                                                                                        is_busy.set(false);
+                                                                                        return;
+                                                                                    }
                                                                                 }
-                                                                                Err(e) => {
-                                                                                    lines.push(format!("[ERROR] Feeder component resolution failed: {}", e));
-                                                                                    job_lines.set(lines);
-                                                                                    is_busy.set(false);
-                                                                                    return;
+                                                                            }
+                                                                            let api_lower = target_game.api.to_lowercase();
+                                                                            let is_legacy_dx = api_lower.contains('9') || api_lower.contains('8') || api_lower.contains("d3d9") || api_lower.contains("d3d8");
+                                                                            if is_legacy_dx && payloads.dgvoodoo.is_none() {
+                                                                                match crate::core::addons::ensure_dgvoodoo_components(&mut lines).await {
+                                                                                    Ok(dg) => {
+                                                                                        payloads.dgvoodoo = Some(dg);
+                                                                                        job_lines.set(lines.clone());
+                                                                                    }
+                                                                                    Err(e) => {
+                                                                                        lines.push(format!("[ERROR] dgVoodoo component resolution failed: {}", e));
+                                                                                        job_lines.set(lines);
+                                                                                        is_busy.set(false);
+                                                                                        return;
+                                                                                    }
                                                                                 }
                                                                             }
                                                                         }
-                                                                        let api_lower = target_game.api.to_lowercase();
-                                                                        let is_legacy_dx = api_lower.contains('9') || api_lower.contains('8') || api_lower.contains("d3d9") || api_lower.contains("d3d8");
-                                                                        if is_legacy_dx && payloads.dgvoodoo.is_none() {
-                                                                            match crate::core::downloader::ensure_dgvoodoo_components(&mut lines).await {
-                                                                                Ok(dg) => {
-                                                                                    payloads.dgvoodoo = Some(dg);
-                                                                                    job_lines.set(lines.clone());
-                                                                                }
-                                                                                Err(e) => {
-                                                                                    lines.push(format!("[ERROR] dgVoodoo component resolution failed: {}", e));
-                                                                                    job_lines.set(lines);
-                                                                                    is_busy.set(false);
-                                                                                    return;
-                                                                                }
-                                                                            }
-                                                                        }
+
                                                                         if mfg_choice_val && payloads.renodx_mfgunlock_addon.is_none() {
-                                                                            match crate::core::downloader::ensure_mfg_v09_addon(&mut lines).await {
+                                                                            match crate::core::addons::ensure_mfg_v09_addon(&mut lines).await {
                                                                                 Ok(addon_p) => {
                                                                                     payloads.renodx_mfgunlock_addon = Some(addon_p);
                                                                                     job_lines.set(lines.clone());
@@ -4039,13 +4314,7 @@ pub fn App() -> Element {
                                                                     let b_task = cur_eff_backend.clone();
                                                                     let r_task = cur_eff_route.clone();
                                                                     let result = tokio::task::spawn_blocking(move || {
-                                                                        if b_task == "optiscaler" {
-                                                                            crate::core::optiscaler::deploy_optiscaler(&deploy_opts)
-                                                                        } else if r_task == "native" {
-                                                                            crate::core::optiscaler::deploy_native_dlss5(&deploy_opts)
-                                                                        } else {
-                                                                            crate::core::optiscaler::deploy_feeder_with_bundle(&deploy_opts, &payloads)
-                                                                        }
+                                                                        crate::core::routes::RouteFactory::dispatch_deploy(&b_task, &r_task, &deploy_opts, &payloads)
                                                                     }).await;
 
                                                                     match result {

@@ -1,8 +1,10 @@
 use dlss_studio::big_picture::ui::*;
 use dlss_studio::core::scan::{GameEntry, GameExeOption};
-use dlss_studio::core::install_routes::{
-    recommended_route, get_optiscaler_advisory, get_native_dlss_advisory, get_mfg_advisory, InstallRoute,
+use dlss_studio::core::advisories::{
+    get_mfg_advisory, get_native_dlss_advisory, get_optiscaler_advisory,
 };
+use dlss_studio::core::routes::{recommended_route, InstallRoute};
+use dioxus::prelude::*;
 
     #[test]
     fn test_filter_games_store_partitioning() {
@@ -590,6 +592,45 @@ use dlss_studio::core::install_routes::{
     }
 
     #[test]
+    fn test_launch_overlay_lifecycle_multilingual_entering_and_exiting_titles() {
+        let langs = ["en", "de", "es", "fr", "it", "pt", "ru", "zh", "ja", "ko", "pl", "tr", "ar", "hi"];
+
+        for lang_code in langs {
+            // Entering Big Picture
+            let enter_state = resolve_launch_overlay_state(
+                LaunchLifecycleStage::EnteringBigPicture,
+                "",
+                None,
+                lang_code,
+            );
+            let enter_overlay = enter_state.expect("Entering stage must produce an overlay");
+            let enter_expected = dlss_studio::core::i18n::t(lang_code, "bp_entering_title").to_string();
+            assert_eq!(
+                enter_overlay.title, enter_expected,
+                "Language code '{}' produced unexpected entering title",
+                lang_code
+            );
+            assert!(!enter_overlay.is_exiting);
+
+            // Exiting Big Picture
+            let exit_state = resolve_launch_overlay_state(
+                LaunchLifecycleStage::ExitingBigPicture,
+                "",
+                None,
+                lang_code,
+            );
+            let exit_overlay = exit_state.expect("Exiting stage must produce an overlay");
+            let exit_expected = dlss_studio::core::i18n::t(lang_code, "bp_exiting_title").to_string();
+            assert_eq!(
+                exit_overlay.title, exit_expected,
+                "Language code '{}' produced unexpected exiting title",
+                lang_code
+            );
+            assert!(exit_overlay.is_exiting);
+        }
+    }
+
+    #[test]
     fn test_options_profile_idx_strictly_clamped_to_presets() {
         // Navigation clamp logic: (cur + 1).min(3) and cur.saturating_sub(1)
         let mut idx = 0usize;
@@ -752,4 +793,76 @@ use dlss_studio::core::install_routes::{
         let is_fg = is_dlss_studio_foreground();
         // In headless cargo test runners, the active foreground is either the runner or non-app window
         let _ = is_fg;
+    }
+
+    #[component]
+    fn BpTestWrapper(
+        sample_games: Vec<GameEntry>,
+        rust_theme_val: bool,
+        theme_val: String,
+        lang_val: String,
+    ) -> Element {
+        let games = use_signal(|| sample_games);
+        let is_open = use_signal(|| true);
+        let rust_theme = use_signal(|| rust_theme_val);
+        let theme = use_signal(|| theme_val);
+        let lang = use_signal(|| lang_val);
+
+        rsx! {
+            BigPictureOverlay {
+                games,
+                is_open,
+                rust_theme,
+                theme,
+                lang,
+            }
+        }
+    }
+
+    #[test]
+    fn test_big_picture_overlay_headless_render() {
+        let games = vec![
+            GameEntry {
+                name: "Cyberpunk 2077".to_string(),
+                launcher: "Steam".to_string(),
+                api: "DirectX 12".to_string(),
+                bitness: 64,
+                dlss_version: Some("3.7.0.0".to_string()),
+                has_frame_generation: true,
+                ..Default::default()
+            },
+            GameEntry {
+                name: "Baldur's Gate 3".to_string(),
+                launcher: "GOG".to_string(),
+                api: "DirectX 11".to_string(),
+                bitness: 64,
+                dlss_version: Some("2.4.2.0".to_string()),
+                can_inject_fg: true,
+                ..Default::default()
+            },
+        ];
+
+        // 1. Render in dark theme with rust texture
+        let mut dom1 = VirtualDom::new_with_props(
+            BpTestWrapper,
+            BpTestWrapperProps {
+                sample_games: games.clone(),
+                rust_theme_val: true,
+                theme_val: "dark".to_string(),
+                lang_val: "en".to_string(),
+            },
+        );
+        dom1.rebuild_in_place();
+
+        // 2. Render in light theme, German language, empty games
+        let mut dom2 = VirtualDom::new_with_props(
+            BpTestWrapper,
+            BpTestWrapperProps {
+                sample_games: Vec::new(),
+                rust_theme_val: false,
+                theme_val: "light".to_string(),
+                lang_val: "de".to_string(),
+            },
+        );
+        dom2.rebuild_in_place();
     }

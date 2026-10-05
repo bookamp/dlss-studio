@@ -12,6 +12,20 @@ pub mod ui;
 
 pub use ui::{BigPictureOverlay, BigPictureProps};
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static STARTED_IN_BIG_PICTURE: AtomicBool = AtomicBool::new(false);
+
+/// Sets whether DLSS Studio was started directly into Big Picture mode via command line arguments.
+pub fn set_started_in_big_picture(val: bool) {
+    STARTED_IN_BIG_PICTURE.store(val, Ordering::SeqCst);
+}
+
+/// Returns true if the application process was launched directly into Big Picture mode.
+pub fn was_started_in_big_picture() -> bool {
+    STARTED_IN_BIG_PICTURE.load(Ordering::SeqCst)
+}
+
 /// Returns true if command-line arguments explicitly request launching directly in Big Picture mode.
 pub fn launch_args_request_big_picture(args: &[String]) -> bool {
     args.iter().any(|a| a == "--big-picture" || a == "--tv" || a == "-bp")
