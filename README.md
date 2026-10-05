@@ -1,10 +1,10 @@
-# DLSS 5 STUDIO ⚡ v2.0.1
+# DLSS 5 STUDIO ⚡ v2.0.2
 
 > **A blisteringly fast, low-memory utility built in pure native Rust to enable and unlock DLSS, Neural Reconstruction, and 4x Frame Generation across your PC games while preserving pristine graphical fidelity.**
 >
 > _Supports all **GeForce RTX GPUs (20, 30, and 40-Series)** for DLSS upscaling and OptiScaler Pre-SR, with **exclusive 4x Multi-Frame Generation unlocking for RTX 40-Series cards**._
 
-[![Version](https://img.shields.io/badge/version-2.0.1-orange.svg)](#)
+[![Version](https://img.shields.io/badge/version-2.0.2-orange.svg)](#)
 [![Platform](<https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20(64--bit)-blue.svg>)](#)
 [![Language](https://img.shields.io/badge/language-100%25%20Pure%20Rust-red.svg)](#)
 [![i18n](https://img.shields.io/badge/i18n-14%20Languages-yellow.svg)](#)
